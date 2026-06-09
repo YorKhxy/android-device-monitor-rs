@@ -22,12 +22,8 @@ fn stub() -> Value {
 }
 
 // ——— 设备连接 ———
-#[tauri::command] pub fn get_adb_status() -> Value { json!({ "success": true, "data": { "available": false, "version": null } }) }
-#[tauri::command] pub fn get_devices() -> Value { ok_list() }
-#[tauri::command] pub fn connect_wifi() -> Value { stub() }
-#[tauri::command] pub fn pair_wifi() -> Value { stub() }
-#[tauri::command] pub fn disconnect() -> Value { stub() }
-#[tauri::command] pub fn connect_usb() -> Value { ok_list() }
+// get_adb_status / get_devices / connect_wifi / pair_wifi / disconnect / connect_usb
+// 已在 P1 由真实现接管，见 adb::commands。
 
 // ——— 日志 ———
 #[tauri::command] pub fn start_logcat() -> Value { stub() }

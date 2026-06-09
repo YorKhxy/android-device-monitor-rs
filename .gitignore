@@ -11,3 +11,8 @@ src-tauri/gen/
 # 杂项
 .DS_Store
 *.log
+
+# bundled 二进制(由 prepare 脚本准备，不入库)
+src-tauri/platform-tools/
+src-tauri/scrcpy/
+src-tauri/resources/*.apk

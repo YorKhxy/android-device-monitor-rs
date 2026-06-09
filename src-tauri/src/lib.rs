@@ -3,6 +3,7 @@
 //! P0 阶段：注册全部 IPC 命令桩 + 运行时根目录推导。
 //! 后续 Phase 按 DEV-PLAN 将各模块（adb/performance/transfer/weaknet/logging/updater）接入真实实现。
 
+mod adb;
 mod commands;
 mod runtime_root;
 
@@ -10,14 +11,19 @@ mod runtime_root;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // 启动设备监控轮询，设备列表变化时 emit device_list_changed
+            adb::monitor::start(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            // 设备连接
-            commands::get_adb_status,
-            commands::get_devices,
-            commands::connect_wifi,
-            commands::pair_wifi,
-            commands::disconnect,
-            commands::connect_usb,
+            // 设备连接（P1 真实现）
+            adb::commands::get_adb_status,
+            adb::commands::get_devices,
+            adb::commands::connect_wifi,
+            adb::commands::pair_wifi,
+            adb::commands::disconnect,
+            adb::commands::connect_usb,
             // 日志
             commands::start_logcat,
             commands::stop_logcat,
