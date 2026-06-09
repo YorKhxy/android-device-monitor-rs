@@ -27,10 +27,9 @@
   - **真机验收（Windows + Pico/Android）已过大半**：设备连接（USB+WiFi）、电量、Pico 官方指标（FPS/MTP/FrmCpu/FrmGpu/ATWGPU/GPU）、性能曲线、采集报告、回看视频播放、导出时间均正常。
   - **真机修过 2 个坑**：① 回看视频黑屏 → 前端媒体 URL 改用 `convertFileSrc`（Windows WebView2 自定义协议须 `http://<scheme>.localhost/`，见 feedback）；② 导出 xlsx 时间改用系统本地时区（chrono Local）。
   - **待补真机验收**：应用启停/卸载/安装、采集开始→停止全流程录制、zip 导入导出、视频快捷截图、时间轴过滤打标记。
-- ✅ **P3 投屏镜像（代码完成，待真机验收）**：T3.2 scrcpy 资源准备+二进制定位 / T3.3 进程管理+基础投屏 start/stop / T3.4 Pico 单眼裁切 / T3.5 声音去向实时切换。每 Task 过 code-reviewer 两阶段审查，`cargo test` 15/15，`cargo build` + 前端 `npm run build` 通过。
+- ✅ **P3 投屏镜像（真机验收通过）**：T3.2 scrcpy 资源准备+二进制定位 / T3.3 进程管理+基础投屏 start/stop / T3.4 Pico 单眼裁切 / T3.5 声音去向实时切换。每 Task 过 code-reviewer 两阶段审查，`cargo test` 15/15，`cargo build` + 前端 `npm run build` 通过。**真机验证：投屏调起+操控正常，声音「设备 + 电脑同时出声」（`--audio-dup`，Android 13+）验证可行。**
   - **T3.1 设备截图（framebuffer 快路/screencap 回退）已剔除**：当前前端无消费方（投屏改为调起独立 scrcpy 窗口看画面），如后续要应用内实时预览再回补 `adb/screenshot.rs`。
   - **关键实现**：scrcpy v3.3.3 经 `scripts/prepare-scrcpy.mjs` 下到 `src-tauri/scrcpy/win/`（三环节：prepare + `tauri.conf.json` resources `scrcpy/**/*` + 运行时 `resolve_scrcpy_path`）；视频主进程恒 `--no-audio`，声音由独立纯音频进程承载（A13+ `--audio-dup` 两边出声 / 低版本 `--audio-source=output` 设备静音）；Pico 查 `wm size` 裁左眼 `--crop 宽/2:高:0:0`；scrcpy 经 `ADB` 环境变量复用 bundled adb 避免 server 版本互踢；进程注册表 generation 防快速重启竞态，退出/关窗自动广播 `mirror_status`。
-  - **待真机验收**：调起窗口+操控、关窗即停无残留、分辨率/码率生效、Pico 单眼裁切位置、声音两边出声/降级文案/切换不闪、启动失败中文提示。
 - ⬜ **P4–P7**：文件传输+日志 / 弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
   - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
 
