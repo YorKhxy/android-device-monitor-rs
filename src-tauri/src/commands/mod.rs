@@ -29,9 +29,8 @@ fn stub() -> Value {
 #[tauri::command] pub fn start_logcat() -> Value { stub() }
 #[tauri::command] pub fn stop_logcat() -> Value { stub() }
 
-// ——— 性能/采集 ——（get_performance + 采集会话生命周期已由 commands::performance 接管，T2.3/T2.6）—
-// 回看截图/导出/导入仍为占位（T2.7/T2.8）。
-#[tauri::command] pub fn save_capture_frame() -> Value { stub() }
+// ——— 性能/采集 ——（get_performance + 采集会话生命周期 + save_capture_frame 已由 commands::performance 接管）—
+// 导出/导入仍为占位（T2.8）。
 #[tauri::command] pub fn export_capture_session() -> Value { stub() }
 #[tauri::command] pub fn select_import_files() -> Value { ok_list() }
 #[tauri::command] pub fn import_capture_sessions() -> Value { stub() }

@@ -239,7 +239,6 @@ pub async fn save_markers(session_id: &str, markers: &Value) -> Result<(), AdbEr
 }
 
 /// 保存一帧快捷截图到 screenshots/，返回相对路径（供回看展示）。消费方：T2.7 save_capture_frame。
-#[allow(dead_code)]
 pub async fn save_screenshot(session_id: &str, png: &[u8]) -> Result<String, AdbError> {
     let dir = screenshot_dir(session_id)?;
     tokio::fs::create_dir_all(&dir)

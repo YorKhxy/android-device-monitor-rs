@@ -36,6 +36,7 @@ dependencies = [
 name = "android-device-monitor"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "regex",
  "serde",
  "serde_json",

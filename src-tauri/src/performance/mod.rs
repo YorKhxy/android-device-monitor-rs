@@ -2,4 +2,5 @@
 
 pub mod capture_controller;
 pub mod capture_store;
+pub mod media;
 pub mod types;

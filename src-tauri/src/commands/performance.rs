@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tauri::AppHandle;
 
 use crate::adb::binary;
-use crate::adb::error::classify_adb_error;
+use crate::adb::error::{classify_adb_error, AdbError};
 use crate::adb::performance_dispatch;
 use crate::adb::runtime_inspector;
 use crate::performance::{capture_controller, capture_store};
@@ -137,6 +137,30 @@ pub async fn rename_capture_session(session_id: String, title: String) -> Value 
 pub async fn save_capture_markers(session_id: String, markers: Value) -> Value {
     match capture_store::save_markers(&session_id, &markers).await {
         Ok(()) => json!({ "success": true, "data": null }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 视频快捷截图：把当前帧 PNG dataUrl 解码归档到会话 screenshots/，返回相对路径（T2.7）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn save_capture_frame(session_id: String, data_url: String) -> Value {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    // data:image/png;base64,XXXX → 取逗号后的 base64 主体（无逗号则按纯 base64 处理）。
+    let b64 = data_url.split_once(',').map(|(_, b)| b).unwrap_or(&data_url);
+    let png = match STANDARD.decode(b64.trim()) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return AdbError::custom(
+                "CAPTURE_STORE_ERROR",
+                "截图数据解析失败。".to_string(),
+                "请重试快捷截图。",
+                e.to_string(),
+            )
+            .to_result()
+        }
+    };
+    match capture_store::save_screenshot(&session_id, &png).await {
+        Ok(rel) => json!({ "success": true, "data": rel }),
         Err(e) => e.to_result(),
     }
 }

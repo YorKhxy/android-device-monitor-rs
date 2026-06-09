@@ -13,6 +13,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 采集媒体协议 adm-media://<相对路径> → 运行时根目录磁盘文件（视频/截图，支持 Range + CORS）。
+        .register_uri_scheme_protocol(performance::media::SCHEME, |_ctx, request| {
+            performance::media::handle(&request)
+        })
         .setup(|app| {
             // 启动设备监控轮询，设备列表变化时 emit device_list_changed
             adb::monitor::start(app.handle().clone());
@@ -43,8 +47,8 @@ pub fn run() {
             commands::performance::delete_capture_session,
             commands::performance::rename_capture_session,
             commands::performance::save_capture_markers,
-            // 采集回看截图/导入导出（T2.7/T2.8 待实现）
-            commands::save_capture_frame,
+            commands::performance::save_capture_frame,
+            // 导入导出（T2.8 待实现）
             commands::export_capture_session,
             commands::select_import_files,
             commands::import_capture_sessions,
