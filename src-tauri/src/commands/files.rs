@@ -13,6 +13,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::adb::binary;
 use crate::adb::error::classify_adb_error;
 use crate::adb::manager::exec_adb_capture;
+use crate::transfer::runner::shell_quote;
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -114,7 +115,9 @@ pub async fn list_device_files(app: AppHandle, device_id: String, dir_path: Stri
         Some(p) => p,
     };
     let dir = normalize_dir(&dir_path);
-    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "ls", "-al", &dir], 15_000).await {
+    // 过 adb shell 的路径需单引号转义，含空格/元字符的目录名才不被设备 shell 词拆破裂。
+    let q_dir = shell_quote(&dir);
+    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "ls", "-al", &q_dir], 15_000).await {
         Ok(out) if out.success => {
             let entries: Vec<DeviceFileEntry> =
                 out.stdout.lines().filter_map(|l| parse_ls_line(l, &dir)).collect();
@@ -140,7 +143,8 @@ pub async fn delete_device_file(
         None => return adb_not_found(),
         Some(p) => p,
     };
-    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "rm", "-rf", &remote_path], 15_000).await {
+    let q_path = shell_quote(&remote_path);
+    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "rm", "-rf", &q_path], 15_000).await {
         Ok(out) if out.success => json!({ "success": true, "data": null }),
         Ok(out) => json!({ "success": false, "error": describe_or(&out.stderr, "删除失败") }),
         Err(e) => e.to_result(),
@@ -160,7 +164,8 @@ pub async fn create_device_folder(
         Some(p) => p,
     };
     let target = join_path(&normalize_dir(&dir_path), name.trim());
-    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "mkdir", &target], 15_000).await {
+    let q_target = shell_quote(&target);
+    match exec_adb_capture(&adb, &["-s", &device_id, "shell", "mkdir", &q_target], 15_000).await {
         Ok(out) if out.success => json!({ "success": true, "data": target }),
         Ok(out) => json!({ "success": false, "error": describe_or(&out.stderr, "新建文件夹失败") }),
         Err(e) => e.to_result(),
