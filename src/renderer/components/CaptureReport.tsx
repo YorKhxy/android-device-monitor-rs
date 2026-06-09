@@ -43,6 +43,9 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   const [appliedMarkers, setAppliedMarkers] = useState<PerformanceCaptureMarker[]>([]);
   const [frameNote, setFrameNote] = useState<string | null>(null);
   const [capturingFrame, setCapturingFrame] = useState(false);
+  // 含音录制（T2.10）回看：静音开关 + 音量；仅 audioRecorded 会话显示控件。
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingSeekOffsetRef = useRef<number | null>(null);
   // markers prop 可能每次渲染换新引用；只在切会话时播种，故经 ref 读取避免反复复位过滤态。
@@ -58,6 +61,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   });
 
   const sessionId = session?.id ?? null;
+  // 回看态且本次含音轨才显示音量控件（采集中 live 不播放、无音轨会话静音控件无意义）。
+  const hasAudio = !live && Boolean(session?.audioRecorded);
   // 切换会话 / 重新采集时复位播放态，并从该会话已存的标记还原过滤态——
   // 既显示曲线标记，也把过滤条件行重建出来（marker 含 metricKey/op/threshold），
   // 这样过滤内容一直保留、随时可调，不会执行完就消失。
@@ -80,6 +85,14 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     }
     onActiveSampleChange?.(findNearestSample(samples, new Date(session.startedAt), playheadMs));
   }, [live, session, samples, playheadMs, onActiveSampleChange]);
+
+  // 含音回看：把静音/音量同步到 video（切分段时 video 按 key 重建，需重设）。React 不把 muted 当受控属性。
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = muted;
+    v.volume = volume;
+  }, [muted, volume, activeSegmentIndex, hasAudio]);
 
   // PC 键盘 ← / → 控制时间轴：左后退、右前进，按住 Shift 大步(5s)否则 1s。
   // 焦点在输入框/文本域/下拉/可编辑元素时不抢方向键；采集中(live)或无时长时不响应。
@@ -289,6 +302,32 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
           <div style={{ color: 'var(--fg-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
             {formatClock(playheadMs)} / {formatClock(totalMs)}
           </div>
+          {hasAudio && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setMuted((m) => !m)}
+                className="btn secondary sm iconbtn"
+                aria-label={muted ? '取消静音' : '静音'}
+                data-tip={muted ? '取消静音' : '静音'}
+                style={{ flexShrink: 0 }}
+              ><Icon name={muted ? 'volume-x' : 'volume-2'} /></button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setVolume(val);
+                  setMuted(val === 0);
+                }}
+                style={{ width: '64px', accentColor: 'var(--accent)', cursor: 'pointer' }}
+                aria-label="音量"
+              />
+            </div>
+          )}
           {onSaveFrame && (
             <button
               type="button"
