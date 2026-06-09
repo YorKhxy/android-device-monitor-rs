@@ -11,6 +11,7 @@
 pub mod apps;
 pub mod capture_io;
 pub mod files;
+pub mod logcat;
 pub mod mirror;
 pub mod performance;
 pub mod transfer;
@@ -24,9 +25,7 @@ fn stub() -> Value {
     json!({ "success": false, "error": "占位：该能力将在后续 Phase 实现" })
 }
 
-// ——— 日志 ———
-#[tauri::command] pub fn start_logcat() -> Value { stub() }
-#[tauri::command] pub fn stop_logcat() -> Value { stub() }
+// ——— 日志 ——（start_logcat / stop_logcat 已由 commands::logcat 接管，T4-4）—
 
 // ——— 性能/采集 ——（get_performance + 采集会话生命周期 + save_capture_frame → commands::performance；
 //     导出/导入 export/select_import/import/export_performance → commands::capture_io，T2.8）—

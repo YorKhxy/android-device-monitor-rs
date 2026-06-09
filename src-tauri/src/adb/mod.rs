@@ -6,6 +6,8 @@ pub mod capture_segment;
 pub mod commands;
 pub mod error;
 pub mod install;
+pub mod logcat_parser;
+pub mod logcat_stream;
 pub mod manager;
 pub mod monitor;
 pub mod performance_dispatch;

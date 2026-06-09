@@ -32,9 +32,9 @@ pub fn run() {
             adb::commands::pair_wifi,
             adb::commands::disconnect,
             adb::commands::connect_usb,
-            // 日志
-            commands::start_logcat,
-            commands::stop_logcat,
+            // 日志（T4-4 真实现）
+            commands::logcat::start_logcat,
+            commands::logcat::stop_logcat,
             // 性能/运行情况（T2.3 真实现）
             commands::performance::get_performance,
             commands::performance::get_processes,
@@ -114,6 +114,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move {
                     performance::capture_controller::stop_all(&app).await;
                     adb::pico_metrics_stream::stop_all().await;
+                    adb::logcat_stream::stop_all().await;
                     mirror::stop_all().await;
                 });
             }
