@@ -23,7 +23,13 @@
 - ✅ **P0 工程骨架**：Tauri+WebView2、前端搬入、IPC 桥接 shim、命令桩、运行时根目录推导。
 - ✅ **P1 adb 引擎 + 设备连接**：Rust 重写 ADBManager 核心（`src-tauri/src/adb/`），设备列表/信息/连接/断开/状态/监控轮询，真机验证通过。
 - ✅ 移除整个「网络」模块（应用网络请求抓取），标签由 6→5（设备/日志/性能/投屏/弱网）。
-- ⬜ **P2–P7**：性能采集 / 截图投屏 / 文件传输日志 / 弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
+- ✅ **P2 性能采集（应用运行情况模块）**：9 个 Task 全部完成（应用管理 T2.1 / 性能采样 T2.3 / Pico 官方指标 T2.4 / APK 安装 T2.2 / 持续分段录制 T2.5 / 采集会话存储+控制 T2.6 / 回看媒体协议 T2.7 / xlsx+zip 导出导入 T2.8 / 时间轴数据支撑 T2.9）。每 Task 过 code-reviewer 两阶段审查，`cargo test` 7/7。
+  - **真机验收（Windows + Pico/Android）已过大半**：设备连接（USB+WiFi）、电量、Pico 官方指标（FPS/MTP/FrmCpu/FrmGpu/ATWGPU/GPU）、性能曲线、采集报告、回看视频播放、导出时间均正常。
+  - **真机修过 2 个坑**：① 回看视频黑屏 → 前端媒体 URL 改用 `convertFileSrc`（Windows WebView2 自定义协议须 `http://<scheme>.localhost/`，见 feedback）；② 导出 xlsx 时间改用系统本地时区（chrono Local）。
+  - **待补真机验收**：应用启停/卸载/安装、采集开始→停止全流程录制、zip 导入导出、视频快捷截图、时间轴过滤打标记。
+- ⬜ **P3–P7**：截图投屏 / 文件传输日志 / 弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
+  - 📌 P3 投屏前：`src-tauri/tauri.conf.json` 的 `resources` 目前只列了 platform-tools，**scrcpy 尚未加入**（见 feedback 打包开箱即用）。
+  - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
 
 ## 开发
 
