@@ -8,6 +8,7 @@ mod commands;
 mod mirror;
 mod performance;
 mod runtime_root;
+mod transfer;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -84,9 +85,9 @@ pub fn run() {
             commands::files::delete_device_file,
             commands::files::create_device_folder,
             commands::files::select_upload_files,
-            commands::pull_device_file,
-            commands::pull_device_files,
-            commands::push_device_file,
+            commands::transfer::pull_device_file,
+            commands::transfer::pull_device_files,
+            commands::transfer::push_device_file,
             commands::resume_transfers,
             commands::discard_transfers,
             commands::get_resume_batches,

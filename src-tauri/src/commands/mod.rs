@@ -13,6 +13,7 @@ pub mod capture_io;
 pub mod files;
 pub mod mirror;
 pub mod performance;
+pub mod transfer;
 
 use serde_json::{json, Value};
 
@@ -56,10 +57,8 @@ fn stub() -> Value {
 #[tauri::command] pub fn export_weaknet_traffic() -> Value { stub() }
 #[tauri::command] pub fn query_weaknet_shaper_stats() -> Value { json!({ "success": true, "data": null }) }
 
-// ——— 文件管理/传输 ——（list/delete/create/select_upload 已由 commands::files 接管，T4-1）—
-#[tauri::command] pub fn pull_device_file() -> Value { stub() }
-#[tauri::command] pub fn pull_device_files() -> Value { stub() }
-#[tauri::command] pub fn push_device_file() -> Value { stub() }
+// ——— 文件管理/传输 ——（list/delete/create/select_upload → commands::files T4-1；
+//     push/pull → commands::transfer T4-2；resume/discard/get_resume_batches 待 T4-3）—
 #[tauri::command] pub fn resume_transfers() -> Value { stub() }
 #[tauri::command] pub fn discard_transfers() -> Value { stub() }
 #[tauri::command] pub fn get_resume_batches() -> Value { ok_list() }
