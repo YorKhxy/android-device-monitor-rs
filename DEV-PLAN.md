@@ -138,6 +138,12 @@ android-device-monitor-rs/
 - **T2.7 采集回看 + 媒体协议**：`performance/media.rs` 对应原 `performanceMedia.ts`——自定义协议把 `performance-recordings/...` 相对路径映射到磁盘文件供前端播放（Tauri 用 `asset:` 协议或自定义 protocol；UI 不暴露宿主绝对路径）。回看加载曲线+视频、删除（二次确认连数据带视频）、视频快捷截图归档到该次采集截图子目录。
 - **T2.8 会话导出**：`performance/session_export.rs` 对应原 `performanceSessionExport.ts`，用 **rust_xlsxwriter** 导出 xlsx 工作簿（统一取 `metrics.fps`）。
 - **T2.9 时间轴联动 + 过滤打标记（后端数据支撑）**：报告曲线多选/隔离逻辑前端已有；后端提供采样数据与按指标阈值（`>`/`=`/`<`，多条件、各自按指标标记不做 AND 交集）所需数据接口。
+- **T2.10 采集录制音频（可选，Spec v2.2 增补；P3 之后做）**：让采集录像可选带设备声音，回看可听。
+  - 开关：采集设置面板加「录制设备声音」开关（默认关），不支持设备（Android<13）置灰并提示「该设备不支持录音」。`commands/performance.rs` 的 `start_capture_session` 增 `recordAudio: bool` 入参；`electronApiShim` 透传。
+  - 后端选路：`performance/capture_controller.rs` 采集启动时按 `recordAudio` 开关 + 设备能力选录制后端——查 API level（复用 P3 `adb/scrcpy.rs` 的 `build_audio_args` dup/output 口径），满足「Android 13+ 且音频可捕获」→ scrcpy `--record`（视频+音频录进同一 MP4，`--audio-dup` 设备与电脑同时出声、设备不静音）；否则降级回 `screenrecord` 无声路径兜底。Pico 已真机验证可行（A13+），同走含音路径。
+  - 单段录制：`adb/capture_segment.rs` 新增 scrcpy `--record --time-limit=180` 单段 spawn 路径，与现有 `screenrecord` 单段并存（按 provider/录音开关分流，统一返回 `SpawnedSegment` 供多段编排复用）；scrcpy 到 `--time-limit` 会整进程停止（不像 screenrecord 自动续），故 `adb/capture_recorder.rs` 多段循环对该路径走「当前段结束 → spawn 下一段」，接缝处音频可能短暂断续，留真机调。
+  - 存储与回放：`performance/capture_store.rs` 会话 manifest 落 `audioRecorded: bool`；`shared/types` 的 `PerformanceCaptureSession` 加 `audioRecorded?: boolean`；回看 `CaptureReport` 的 `<video>` 加音量/静音控制（含音轨 MP4 直接播放，默认不静音）。
+  - 复用 P3 已落地的 `scrcpy::resolve_scrcpy_path` 与 `build_audio_args`，不重复造。
 
 **关键文件**：
 - `src-tauri/src/commands/apps.rs` — 应用列表/启停/卸载/安装
@@ -147,7 +153,11 @@ android-device-monitor-rs/
 - `src-tauri/src/performance/capture_controller.rs` + `capture_store.rs` — 采集控制与存储
 - `src-tauri/src/performance/media.rs` — 录制媒体协议（不暴露绝对路径）
 - `src-tauri/src/performance/session_export.rs` — xlsx 导出（rust_xlsxwriter）
-- `src-tauri/src/commands/performance.rs` — 性能模块命令汇总
+- `src-tauri/src/commands/performance.rs` — 性能模块命令汇总（T2.10：start_capture_session 增 recordAudio）
+- `src-tauri/src/adb/scrcpy.rs` — 【T2.10 复用 P3】scrcpy 定位 + build_audio_args 音频参数
+- `src-tauri/src/adb/capture_segment.rs` — 【T2.10】scrcpy `--record` 单段路径（与 screenrecord 并存）
+- `src/renderer/components/CaptureReport.tsx` — 【T2.10】回看 video 加音量/静音控制
+- `src/renderer/components/PerformancePanel.tsx`（采集设置）— 【T2.10】「录制设备声音」开关
 
 **验收标准**：
 - 应用列表/启停/卸载、多设备并行安装（含限流、单独重试、各自进度）与原版一致。
@@ -156,8 +166,10 @@ android-device-monitor-rs/
 - 时间轴拖动曲线游标与视频同步；过滤打标记按指标着色/显隐、单击标记跳转并暂停。
 - 回看列表加载/删除/命名、视频快捷截图、xlsx 导出均正确。
 - 对拍：同一设备同一采集，曲线数值、视频时长、导出内容与原版一致。
+- **（T2.10）**「录制设备声音」开关默认关；开启且设备支持（A13+）时采集录像含音轨，回看可听到设备声音且设备同时出声不静音；Android<13/不支持设备开关置灰、录制走无声路径不报错；`audioRecorded` 字段正确落 manifest 并驱动回看音量控件；含音分段接缝处音频无明显异常（真机验收）。Pico 真机验证含音录制可用。
 
 **风险（最高）**：`screenrecord` 分段缝合的时间轴对齐；各机型/Pico 的 `dumpsys` 输出解析边角 case；媒体协议在 WebView2 下的播放兼容。预留充分对拍时间，复用原工程踩坑结论（FPS 统一口径、内存掉 0 等历史问题）。
+**风险（T2.10）**：scrcpy `--record` 分段自停自起的接缝处音频断续（需真机调，最坏接受接缝处极短静音）；含音录制 + 音频编码对被测应用性能数据的额外开销（监控分辨率/码率，必要时提示录音会增加开销）；scrcpy `--record` 中途异常退出的落盘完整性（复用探测 + 实时落盘机制兜底）。
 
 ---
 
