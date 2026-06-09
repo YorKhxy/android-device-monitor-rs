@@ -19,7 +19,9 @@ use super::runtime_parsers::{
     parse_activity_stack, parse_cpu_usage, parse_foreground_app_from_window, parse_gfx_info,
     parse_memory_usage, parse_processes, parse_running_packages,
 };
-use super::runtime_types::{ActivityStackEntry, ForegroundAppContext, ProcessInfo};
+use super::runtime_types::{
+    ActivityStackEntry, ForegroundAppContext, PicoMetricsPayload, ProcessInfo,
+};
 
 /// 前台应用解析重而慢（dumpsys window/activity），但前台在一次采集里几乎不变。
 /// 按设备缓存，TTL 内复用，把重型 dumpsys 从「每拍」降到「每 5 秒」——省电、少超时。
@@ -53,6 +55,17 @@ pub struct PerformanceMetrics {
     pub activity_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub android_metrics: Option<AndroidPerformancePayload>,
+    // —— Pico 官方指标（T2.4）；非 Pico 路径全为 None 不序列化 ——
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pico_metrics: Option<PicoMetricsPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pico_metrics_state: Option<String>, // "native" | "fallback" | "unavailable"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pico_metrics_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pico_app_support: Option<String>, // "supported" | "unsupported" | "unknown"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pico_support_message: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -132,6 +145,11 @@ pub async fn get_android_performance_metrics(
             memory_source: Some("adb shell cat /proc/meminfo".to_string()),
             fps_source: Some(fps_source),
         }),
+        pico_metrics: None,
+        pico_metrics_state: None,
+        pico_metrics_message: None,
+        pico_app_support: None,
+        pico_support_message: None,
     })
 }
 

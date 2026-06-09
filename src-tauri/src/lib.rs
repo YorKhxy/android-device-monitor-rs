@@ -11,6 +11,7 @@ mod runtime_root;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 启动设备监控轮询，设备列表变化时 emit device_list_changed
             adb::monitor::start(app.handle().clone());
@@ -55,9 +56,9 @@ pub fn run() {
             commands::get_update_status,
             commands::download_update,
             commands::quit_and_install_update,
-            // 应用安装（T2.2 待实现）
-            commands::select_apk_files,
-            commands::install_apk,
+            // 应用安装（T2.2 真实现）
+            commands::apps::select_apk_files,
+            commands::apps::install_apk,
             // 应用管理（T2.1 真实现）
             commands::apps::list_installed_packages,
             commands::apps::launch_app,
@@ -96,6 +97,12 @@ pub fn run() {
             commands::export_full_logs_by_package,
             commands::get_runtime_root,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, event| {
+            // 应用退出时回收全部常驻 PxrMetric 流子进程（对齐原 stopAllStreams 的退出清理）。
+            if let tauri::RunEvent::Exit = event {
+                tauri::async_runtime::block_on(adb::pico_metrics_stream::stop_all());
+            }
+        });
 }

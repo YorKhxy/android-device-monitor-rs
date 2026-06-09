@@ -40,10 +40,11 @@ pub struct AdbOutput {
     pub stderr: String,
 }
 
-/// 容错执行结果：无论退出码都带回输出。
+/// 容错执行结果：无论退出码都带回输出 + 退出是否成功（供需按退出码决策的调用方用，如 install 重试）。
 pub struct Captured {
     pub stdout: String,
     pub stderr: String,
+    pub success: bool,
 }
 
 /// 执行一次 adb，无论退出码都捕获输出（对齐原 execAdbWithExitCode）。
@@ -68,6 +69,7 @@ pub async fn exec_adb_capture(adb: &Path, args: &[&str], timeout_ms: u64) -> Res
     Ok(Captured {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        success: output.status.success(),
     })
 }
 

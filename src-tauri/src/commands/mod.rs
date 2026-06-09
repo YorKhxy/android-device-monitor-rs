@@ -57,9 +57,7 @@ fn stub() -> Value {
 #[tauri::command] pub fn download_update() -> Value { stub() }
 #[tauri::command] pub fn quit_and_install_update() -> Value { stub() }
 
-// ——— 应用安装（T2.2 实现）———
-#[tauri::command] pub fn select_apk_files() -> Value { ok_list() }
-#[tauri::command] pub fn install_apk() -> Value { stub() }
+// ——— 应用安装（select_apk_files / install_apk 已由 commands::apps 接管，T2.2）———
 
 // ——— 弱网 ———
 #[tauri::command] pub fn install_weaknet_helper() -> Value { stub() }

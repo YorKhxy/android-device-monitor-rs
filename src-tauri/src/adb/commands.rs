@@ -68,6 +68,8 @@ pub async fn pair_wifi(app: AppHandle, target: String, pairing_code: String) -> 
 
 #[tauri::command(rename_all = "camelCase")]
 pub async fn disconnect(app: AppHandle, device_id: String) -> Value {
+    // 断开设备时回收其常驻 PxrMetric 流（否则等空闲看门狗 15s 后才回收）。
+    super::pico_metrics_stream::stop(&device_id).await;
     match binary::resolve_adb_path(&app) {
         None => adb_not_found(),
         Some(adb) => match manager::disconnect(&adb, &device_id).await {

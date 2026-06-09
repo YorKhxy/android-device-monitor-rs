@@ -2,12 +2,14 @@
 //! 对应原 ADBManager.ts 的 listInstalledPackages / launchApp / forceStopApp / uninstallApp。
 //! 命令名 = 渲染层方法名 snake_case；参数 rename_all="camelCase" 接收前端 camelCase。
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
+use tauri_plugin_dialog::DialogExt;
 
 use crate::adb::binary;
 use crate::adb::error::{classify_adb_error, AdbError};
-use crate::adb::manager;
+use crate::adb::{install, manager};
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -191,5 +193,57 @@ pub async fn uninstall_app(app: AppHandle, device_id: String, package_name: Stri
                 .to_result()
             }
         }
+    }
+}
+
+/// install_apk 的选项（前端传 { allowDowngrade }）。
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallOptions {
+    #[serde(default)]
+    allow_downgrade: bool,
+}
+
+/// 安装单个 APK（`-r`，allowDowngrade 时叠 `-d`）。多 APK×多设备并行在前端编排。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn install_apk(
+    app: AppHandle,
+    device_id: String,
+    apk_path: String,
+    options: Option<InstallOptions>,
+) -> Value {
+    let adb = match binary::resolve_adb_path(&app) {
+        None => return adb_not_found(),
+        Some(p) => p,
+    };
+    let allow_downgrade = options.unwrap_or_default().allow_downgrade;
+    match install::install_apk(&adb, &device_id, &apk_path, allow_downgrade).await {
+        // data 形状对齐前端消费 result.data.output 与原版 ApkInstallResult { apkPath, output }。
+        Ok(output) => json!({ "success": true, "data": { "apkPath": apk_path, "output": output } }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 弹原生多选文件对话框选 APK（.apk 过滤）。取消 → 空数组（对齐原版 canceled）。
+#[tauri::command]
+pub async fn select_apk_files(app: AppHandle) -> Value {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("选择安装包")
+        .add_filter("Android 安装包", &["apk"])
+        .pick_files(move |paths| {
+            let _ = tx.send(paths);
+        });
+    match rx.await {
+        Ok(Some(paths)) => {
+            let list: Vec<String> = paths
+                .into_iter()
+                .filter_map(|p| p.into_path().ok())
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            json!({ "success": true, "data": list })
+        }
+        _ => json!({ "success": true, "data": [] }),
     }
 }

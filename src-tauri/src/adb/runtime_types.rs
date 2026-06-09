@@ -1,5 +1,8 @@
-//! 运行情况采样的数据结构（对齐 shared/types 的 ProcessInfo / ActivityStackEntry）。
+//! 运行情况采样的数据结构（对齐 shared/types 的 ProcessInfo / ActivityStackEntry /
+//! MetricReading / PicoMetricsPayload）。
 //! 与解析逻辑（runtime_parsers）、采集编排（runtime_inspector）分离，集中类型定义。
+
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -34,4 +37,42 @@ pub struct ActivityStackEntry {
 pub struct ForegroundAppContext {
     pub package_name: Option<String>,
     pub activity_name: Option<String>,
+}
+
+/// 单项指标读数（对齐 shared/types 的 MetricReading）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricReading {
+    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_value_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+}
+
+/// Pico 官方指标载荷（对齐 shared/types 的 PicoMetricsPayload）。
+/// 用 BTreeMap 保证 rawFields 序列化顺序稳定（便于对拍/导出复现）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PicoMetricsPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_fields: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps: Option<MetricReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtp: Option<MetricReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_cpu: Option<MetricReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_gpu: Option<MetricReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atw_gpu: Option<MetricReading>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_util: Option<MetricReading>,
 }

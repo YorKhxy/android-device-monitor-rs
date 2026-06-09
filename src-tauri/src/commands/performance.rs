@@ -11,13 +11,14 @@ use tauri::AppHandle;
 
 use crate::adb::binary;
 use crate::adb::error::classify_adb_error;
+use crate::adb::performance_dispatch;
 use crate::adb::runtime_inspector;
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
 }
 
-/// 实时性能采样（Android 路径；Pico 官方指标在 T2.4 接入）。
+/// 实时性能采样（自动探测 Pico/Android；Pico 走官方指标 + Android 旁路）。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_performance(app: AppHandle, device_id: String) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
@@ -25,7 +26,8 @@ pub async fn get_performance(app: AppHandle, device_id: String) -> Value {
         Some(p) => p,
     };
     let foreground = runtime_inspector::get_foreground_app_context_cached(&adb, &device_id).await;
-    match runtime_inspector::get_android_performance_metrics(&adb, &device_id, &foreground).await {
+    // prefer_pico=false：一次性实时采样自动探测设备类型（Pico 走官方指标，否则 Android）。
+    match performance_dispatch::get_performance_metrics(&adb, &device_id, &foreground, false).await {
         Ok(metrics) => json!({ "success": true, "data": metrics }),
         // 采样命令级失败：如实上报错误，不编造 0（前端/采集层据此跳过本拍）。
         Err(e) => e.to_result(),
