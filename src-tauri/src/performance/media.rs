@@ -163,18 +163,14 @@ fn serve_file(path: &Path, range: Option<&str>) -> Response<Vec<u8>> {
 /// adm-media 协议请求处理：URI → 相对路径 → 运行时根目录磁盘文件，支持 Range。
 pub fn handle(request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let uri = request.uri().to_string();
-    let relative = match relative_path_from_uri(&uri) {
-        Some(r) => r,
-        None => return error(StatusCode::FORBIDDEN),
-    };
-    let path = match resolve_under_root(&relative) {
-        Some(p) => p,
-        None => return error(StatusCode::FORBIDDEN),
-    };
     let range = request
         .headers()
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let path = match relative_path_from_uri(&uri).as_deref().and_then(resolve_under_root) {
+        Some(p) => p,
+        None => return error(StatusCode::FORBIDDEN),
+    };
     serve_file(&path, range.as_deref())
 }

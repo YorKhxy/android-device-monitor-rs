@@ -1,3 +1,4 @@
+import { convertFileSrc } from '@tauri-apps/api/core';
 import type { MetricReading, PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceCaptureSegment, PerformanceSample } from '../../shared/types';
 
 export type CaptureMetricKey = 'fps' | 'cpu' | 'mem' | 'gpu';
@@ -46,13 +47,16 @@ export const formatMetricReading = (metric?: MetricReading, fallback = '--') => 
   return `${metric.value}${metric.unit || ''}`;
 };
 
-/** 把会话内相对路径（performance-captures/...）拼成应用内媒体协议 URL。 */
+/** 把会话内相对路径（performance-captures/...）拼成应用内媒体协议 URL。
+ *  用 Tauri convertFileSrc 按平台产正确形式（Windows: http://adm-media.localhost/<path>，
+ *  其他: adm-media://localhost/<path>）——直接拼 adm-media:// 在 Windows WebView2 是未知 scheme，
+ *  请求到不了协议处理器。后端 media.rs 按 performance-captures/ 标记定位相对路径，两种形式都兼容。 */
 export const buildCaptureMediaUrl = (relativePath: string | undefined) => {
   if (!relativePath) {
     return undefined;
   }
   const portablePath = relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
-  return `adm-media://${portablePath.split('/').map(encodeURIComponent).join('/')}`;
+  return convertFileSrc(portablePath, 'adm-media');
 };
 
 /** 某分段视频的媒体 URL：performance-captures/<sessionId>/video/<fileName>。 */
