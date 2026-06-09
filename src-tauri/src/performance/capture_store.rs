@@ -18,8 +18,8 @@ use crate::runtime_root::resolve_runtime_app_root;
 
 use super::types::{CaptureSession, CreateSessionInput, FinalizeSessionInput};
 
-const CAPTURES_DIR: &str = "performance-captures";
-const SAMPLES_FILE: &str = "samples.jsonl";
+pub const CAPTURES_DIR: &str = "performance-captures";
+pub const SAMPLES_FILE: &str = "samples.jsonl";
 const MARKERS_FILE: &str = "markers.json";
 const MANIFEST_FILE: &str = "manifest.json";
 
@@ -65,12 +65,13 @@ fn sanitize(value: &str) -> String {
     if t.is_empty() { "device".to_string() } else { t.to_string() }
 }
 
-fn captures_root() -> PathBuf {
+pub fn captures_root() -> PathBuf {
     resolve_runtime_app_root().join(CAPTURES_DIR)
 }
 
 /// 会话目录，并对外部可控的 sessionId 做穿越防护（拒绝空 / 含分隔符 / `..`）。
-fn session_dir(session_id: &str) -> Result<PathBuf, AdbError> {
+/// 公开供导出命令（getSessionDir）与导入（capture_transfer）复用。
+pub fn session_dir(session_id: &str) -> Result<PathBuf, AdbError> {
     if session_id.is_empty()
         || session_id.contains('/')
         || session_id.contains('\\')
@@ -97,7 +98,7 @@ fn screenshot_dir(session_id: &str) -> Result<PathBuf, AdbError> {
     Ok(session_dir(session_id)?.join("screenshots"))
 }
 
-async fn write_manifest(session_id: &str, session: &CaptureSession) -> Result<(), AdbError> {
+pub async fn write_manifest(session_id: &str, session: &CaptureSession) -> Result<(), AdbError> {
     let path = session_dir(session_id)?.join(MANIFEST_FILE);
     let body = format!(
         "{}\n",

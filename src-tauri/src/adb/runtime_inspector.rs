@@ -252,3 +252,71 @@ pub async fn get_activity_stack(
         Err(_) => Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! 时间轴联动 + 过滤打标记的后端数据支撑（T2.9）：锁死前端硬依赖的 metrics 序列化键名。
+    //! 前端 perfFormat.metricValueOf / getGpuValue 按这些精确 camelCase 键读值——改名即静默断曲线/标记。
+    use super::*;
+    use crate::adb::runtime_types::{MetricReading, PicoMetricsPayload};
+
+    #[test]
+    fn android_metrics_serializes_frontend_keys() {
+        let m = PerformanceMetrics {
+            provider: "android".into(),
+            cpu_usage: 12.5,
+            memory_usage: 2048.0,
+            fps: 60.0,
+            package_name: Some("com.x".into()),
+            activity_name: None,
+            android_metrics: None,
+            pico_metrics: None,
+            pico_metrics_state: None,
+            pico_metrics_message: None,
+            pico_app_support: None,
+            pico_support_message: None,
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        // metricValueOf 读 fps / cpuUsage / memoryUsage；shouldCrop 等读 provider。
+        assert_eq!(v["provider"], "android");
+        assert_eq!(v["fps"], 60.0);
+        assert_eq!(v["cpuUsage"], 12.5);
+        assert_eq!(v["memoryUsage"], 2048.0);
+        assert_eq!(v["packageName"], "com.x");
+        // None 字段不序列化，前端按 undefined 处理。
+        assert!(v.get("picoMetrics").is_none());
+        assert!(v.get("activityName").is_none());
+    }
+
+    #[test]
+    fn pico_gpu_value_serializes_for_getgpuvalue() {
+        let pico = PicoMetricsPayload {
+            gpu_util: Some(MetricReading {
+                value: 87.0,
+                unit: Some("%".into()),
+                max_value: None,
+                max_value_unit: None,
+                raw: None,
+            }),
+            ..Default::default()
+        };
+        let m = PerformanceMetrics {
+            provider: "pico".into(),
+            cpu_usage: 0.0,
+            memory_usage: 0.0,
+            fps: 90.0,
+            package_name: None,
+            activity_name: None,
+            android_metrics: None,
+            pico_metrics: Some(pico),
+            pico_metrics_state: Some("native".into()),
+            pico_metrics_message: None,
+            pico_app_support: None,
+            pico_support_message: None,
+        };
+        let v = serde_json::to_value(&m).unwrap();
+        // getGpuValue 读 metrics.picoMetrics.gpuUtil.value；fps 统一口径同字段。
+        assert_eq!(v["picoMetrics"]["gpuUtil"]["value"], 87.0);
+        assert_eq!(v["fps"], 90.0);
+    }
+}

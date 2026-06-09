@@ -9,6 +9,7 @@
 //! 按 DEV-PLAN 的 P2–P6 逐步替换。约定：命令名 = 渲染层方法名的 snake_case（见 electronApiShim.ts）。
 
 pub mod apps;
+pub mod capture_io;
 pub mod performance;
 
 use serde_json::{json, Value};
@@ -29,12 +30,8 @@ fn stub() -> Value {
 #[tauri::command] pub fn start_logcat() -> Value { stub() }
 #[tauri::command] pub fn stop_logcat() -> Value { stub() }
 
-// ——— 性能/采集 ——（get_performance + 采集会话生命周期 + save_capture_frame 已由 commands::performance 接管）—
-// 导出/导入仍为占位（T2.8）。
-#[tauri::command] pub fn export_capture_session() -> Value { stub() }
-#[tauri::command] pub fn select_import_files() -> Value { ok_list() }
-#[tauri::command] pub fn import_capture_sessions() -> Value { stub() }
-#[tauri::command] pub fn export_performance_session() -> Value { stub() }
+// ——— 性能/采集 ——（get_performance + 采集会话生命周期 + save_capture_frame → commands::performance；
+//     导出/导入 export/select_import/import/export_performance → commands::capture_io，T2.8）—
 
 // ——— 运行情况 ——（get_processes / get_running_packages / get_activity_stack 已由 commands::performance 接管）—
 

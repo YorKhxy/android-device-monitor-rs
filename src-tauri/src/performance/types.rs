@@ -56,3 +56,47 @@ pub struct FinalizeSessionInput {
     pub status: String, // "completed" | "failed"
     pub error: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    //! 锁死前端回看/时间轴硬依赖的会话序列化键名（T2.9 数据支撑）。
+    use super::*;
+    use crate::adb::capture_segment::CaptureSegmentMeta;
+
+    #[test]
+    fn session_serializes_frontend_keys() {
+        let session = CaptureSession {
+            id: "sn-123".into(),
+            device_id: "sn".into(),
+            device_sn: "sn".into(),
+            title: None,
+            provider: "pico-screenrecord".into(),
+            status: "completed".into(),
+            started_at: 1_700_000_000_000,
+            ended_at: Some(1_700_000_010_000),
+            duration_ms: 10_000,
+            single_eye_video: Some(false),
+            video_segments: vec![CaptureSegmentMeta {
+                index: 0,
+                file_name: "seg-0.mp4".into(),
+                start_ms: 0,
+                end_ms: 5_000,
+                size_bytes: 1024,
+            }],
+            data_relative_path: "performance-captures/sn-123/data/samples.jsonl".into(),
+            screenshot_dir: Some("performance-captures/sn-123/screenshots".into()),
+            package_name: None,
+            activity_name: None,
+            size_bytes: Some(1024),
+            error: None,
+        };
+        let v = serde_json::to_value(&session).unwrap();
+        // captureTotalMs 读 durationMs / videoSegments[].endMs；replay 读 startedAt；shouldCrop 读 provider。
+        assert_eq!(v["startedAt"], 1_700_000_000_000_i64);
+        assert_eq!(v["durationMs"], 10_000);
+        assert_eq!(v["provider"], "pico-screenrecord");
+        assert_eq!(v["videoSegments"][0]["endMs"], 5_000);
+        assert_eq!(v["videoSegments"][0]["fileName"], "seg-0.mp4");
+        assert_eq!(v["dataRelativePath"], "performance-captures/sn-123/data/samples.jsonl");
+    }
+}

@@ -2,5 +2,7 @@
 
 pub mod capture_controller;
 pub mod capture_store;
+pub mod capture_transfer;
 pub mod media;
+pub mod session_export;
 pub mod types;

@@ -48,11 +48,11 @@ pub fn run() {
             commands::performance::rename_capture_session,
             commands::performance::save_capture_markers,
             commands::performance::save_capture_frame,
-            // 导入导出（T2.8 待实现）
-            commands::export_capture_session,
-            commands::select_import_files,
-            commands::import_capture_sessions,
-            commands::export_performance_session,
+            // 采集导入导出（T2.8 真实现）
+            commands::capture_io::export_capture_session,
+            commands::capture_io::select_import_files,
+            commands::capture_io::import_capture_sessions,
+            commands::capture_io::export_performance_session,
             // 投屏
             commands::start_mirror,
             commands::stop_mirror,
