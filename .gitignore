@@ -16,3 +16,7 @@ src-tauri/gen/
 src-tauri/platform-tools/
 src-tauri/scrcpy/
 src-tauri/resources/*.apk
+
+# 开发框架与本地状态（FEICAI / engram），不属于产品本身
+# 含 engram.redb（3.6M 本地记忆库）、agents/skills/feedback/hooks 等脚手架
+.claude/
