@@ -5,6 +5,7 @@
 
 mod adb;
 mod commands;
+mod performance;
 mod runtime_root;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,15 +34,16 @@ pub fn run() {
             commands::performance::get_processes,
             commands::performance::get_running_packages,
             commands::performance::get_activity_stack,
-            // 采集
-            commands::start_capture_session,
-            commands::stop_capture_session,
-            commands::get_active_capture_sessions,
-            commands::list_capture_sessions,
-            commands::load_capture_session,
-            commands::delete_capture_session,
-            commands::rename_capture_session,
-            commands::save_capture_markers,
+            // 采集会话（T2.6 真实现）
+            commands::performance::start_capture_session,
+            commands::performance::stop_capture_session,
+            commands::performance::get_active_capture_sessions,
+            commands::performance::list_capture_sessions,
+            commands::performance::load_capture_session,
+            commands::performance::delete_capture_session,
+            commands::performance::rename_capture_session,
+            commands::performance::save_capture_markers,
+            // 采集回看截图/导入导出（T2.7/T2.8 待实现）
             commands::save_capture_frame,
             commands::export_capture_session,
             commands::select_import_files,
@@ -99,10 +101,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|_app, event| {
-            // 应用退出时回收全部常驻 PxrMetric 流子进程（对齐原 stopAllStreams 的退出清理）。
+        .run(|app, event| {
+            // 应用退出清理：停掉进行中的采集（含设备端 screenrecord）+ 回收常驻 PxrMetric 流子进程。
             if let tauri::RunEvent::Exit = event {
-                tauri::async_runtime::block_on(adb::pico_metrics_stream::stop_all());
+                let app = app.clone();
+                tauri::async_runtime::block_on(async move {
+                    performance::capture_controller::stop_all(&app).await;
+                    adb::pico_metrics_stream::stop_all().await;
+                });
             }
         });
 }

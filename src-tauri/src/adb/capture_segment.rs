@@ -1,7 +1,6 @@
 //! 单段录制的生命周期操作（对应原 captureRecorder.ts 的 spawnSegment / assertSegmentAlive /
 //! pullSegment / signalScreenrecordStop / describeSegmentFailure 等）。
 //! 与多段编排（capture_recorder）分离：这里只管「一段」的 spawn/探测/pull/停止信号。
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -9,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc::UnboundedSender;
@@ -23,7 +22,8 @@ pub const MAX_SEGMENT_SECONDS: u32 = 180;
 pub const FIRST_SEGMENT_PROBE_MS: u64 = 700;
 
 /// 一段录制视频的元数据（对齐 shared/types 的 PerformanceCaptureSegment）。
-#[derive(Debug, Clone, Serialize)]
+/// Deserialize 供会话 manifest 往返（capture_store 读改写）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureSegmentMeta {
     pub index: u32,

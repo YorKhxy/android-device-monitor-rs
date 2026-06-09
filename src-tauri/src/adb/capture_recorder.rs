@@ -4,10 +4,7 @@
 //! 的不限时长录制，把一次采集拆成多段 ≤180s 的 mp4：任一时刻设备端只一个 screenrecord 在录，
 //! 当前段退出后才 spawn 下一段；重叠的是「已完成段的 adb pull」与「下一段录制」。每段 pull 落盘后
 //! 经 mpsc 上报（实时落盘，运行时根目录，非 userData）；中途崩溃最多丢「正在录、未 pull 回」的一段。
-//! 单段的 spawn/探测/pull/停止信号见 capture_segment。
-//!
-//! 注：start/stop/is_recording 的消费方是 T2.6 采集控制器；在其落地前本模块整体未被调用。
-#![allow(dead_code)]
+//! 单段的 spawn/探测/pull/停止信号见 capture_segment。消费方：T2.6 采集控制器（capture_controller）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -194,16 +191,5 @@ pub async fn stop(device_id: &str) {
         .unwrap_or_default();
     for j in jobs {
         let _ = j.await;
-    }
-}
-
-/// 停止全部录制（应用退出清理）。
-pub async fn stop_all() {
-    let ids: Vec<String> = active()
-        .lock()
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
-    for id in ids {
-        stop(&id).await;
     }
 }

@@ -13,6 +13,7 @@ use crate::adb::binary;
 use crate::adb::error::classify_adb_error;
 use crate::adb::performance_dispatch;
 use crate::adb::runtime_inspector;
+use crate::performance::{capture_controller, capture_store};
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -70,4 +71,72 @@ pub async fn get_activity_stack(
     let stack =
         runtime_inspector::get_activity_stack(&adb, &device_id, package_name.as_deref()).await;
     json!({ "success": true, "data": stack })
+}
+
+// ——— 采集会话（T2.6）———
+
+/// 开始采集（采样 + 录制同时启动）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn start_capture_session(app: AppHandle, device_id: String) -> Value {
+    match capture_controller::start(&app, &device_id).await {
+        Ok(session) => json!({ "success": true, "data": session }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 关闭采集，finalize 会话。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn stop_capture_session(app: AppHandle, device_id: String) -> Value {
+    match capture_controller::stop(&app, &device_id).await {
+        Ok(session) => json!({ "success": true, "data": session }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 进行中的采集快照（渲染层重载/崩溃后对齐状态）。
+#[tauri::command]
+pub fn get_active_capture_sessions() -> Value {
+    json!({ "success": true, "data": capture_controller::get_active_sessions() })
+}
+
+/// 回看列表（按开始时间倒序）。
+#[tauri::command]
+pub async fn list_capture_sessions() -> Value {
+    json!({ "success": true, "data": capture_store::list_sessions().await })
+}
+
+/// 加载会话详情（manifest + 样本 + 标记）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn load_capture_session(session_id: String) -> Value {
+    match capture_store::load_session(&session_id).await {
+        Ok(detail) => json!({ "success": true, "data": detail }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 删除会话（连数据带视频，二次确认在 UI 侧）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn delete_capture_session(session_id: String) -> Value {
+    match capture_store::delete_session(&session_id).await {
+        Ok(()) => json!({ "success": true, "data": null }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 重命名会话（自定义标题）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn rename_capture_session(session_id: String, title: String) -> Value {
+    match capture_store::rename_session(&session_id, &title).await {
+        Ok(session) => json!({ "success": true, "data": session }),
+        Err(e) => e.to_result(),
+    }
+}
+
+/// 保存参数过滤标记（原样写入 markers.json，供回看复用）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn save_capture_markers(session_id: String, markers: Value) -> Value {
+    match capture_store::save_markers(&session_id, &markers).await {
+        Ok(()) => json!({ "success": true, "data": null }),
+        Err(e) => e.to_result(),
+    }
 }
