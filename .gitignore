@@ -1,0 +1,13 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# 规划文档不进 git？——本仓库保留 Spec/DEV-PLAN 作为基准，故不忽略
+
+# 杂项
+.DS_Store
+*.log

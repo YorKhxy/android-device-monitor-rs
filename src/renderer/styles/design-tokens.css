@@ -1,0 +1,161 @@
+/* =========================================================================
+   安卓设备监控 · Android Device Monitor — Design Tokens
+   A dark INDIGO desktop developer-tool theme with a cornflower-blue accent.
+
+   v2 — trued-up against a real screenshot of the running app (设备 tab).
+   Sampled values: base indigo ~#1a1a2e, panel ~#1f1f33, elevated ~#2a2b46,
+   primary button ~#5597dc, connected/launch green, close amber, uninstall red.
+   The 设备 (Devices) tab is pixel-verified; other tabs are informed
+   reconstructions. Tech: Electron + React 18 + lucide-react, zh-CN, Windows.
+   ========================================================================= */
+
+:root {
+  /* ----------------------------------------------------------------------
+     COLOR — Surfaces (dark indigo; note the blue/violet tint: B > R≈G)
+     ---------------------------------------------------------------------- */
+  --bg-base:        #15162B;   /* window / app background (deep indigo)    */
+  --bg-sidebar:     #181A30;   /* left device sidebar                      */
+  --bg-panel:       #1E2138;   /* content panels, cards                    */
+  --bg-elevated:    #272A45;   /* inputs, menus, popovers, table headers   */
+  --bg-hover:       #2C3052;   /* row / list hover                         */
+  --bg-active:      #313E63;   /* pressed / selected (blue-tinted)         */
+  --bg-input:       #20223A;   /* text fields                              */
+  --bg-scrim:       rgba(8, 9, 18, 0.66); /* modal backdrop                */
+  --bg-mirror:      #0B0C16;   /* screen-mirror canvas / log console       */
+
+  /* Borders & dividers */
+  --border-subtle:  #2A2C47;   /* hairlines inside panels                  */
+  --border-default: #343A5A;   /* card / input outlines                    */
+  --border-strong:  #454C74;   /* focused inputs, emphasized dividers      */
+  --border-selected:#4A90D9;   /* selected device card (blue)              */
+
+  /* ----------------------------------------------------------------------
+     COLOR — Foreground / text
+     ---------------------------------------------------------------------- */
+  --fg-primary:     #EEF1F8;   /* headings, primary text                   */
+  --fg-secondary:   #A7AFC6;   /* body, labels, secondary (cool grey)      */
+  --fg-tertiary:    #6E7693;   /* captions, placeholders                   */
+  --fg-disabled:    #464D69;   /* disabled controls                        */
+  --fg-on-accent:   #FFFFFF;   /* text/icon on the blue accent             */
+
+  /* ----------------------------------------------------------------------
+     COLOR — Accent (cornflower blue — primary action, links, active tab)
+     ---------------------------------------------------------------------- */
+  --accent:         #5597DC;   /* primary buttons, active tab, links        */
+  --accent-hover:   #69A6E5;
+  --accent-press:   #4285CB;
+  --accent-soft:    #5597DC26; /* tinted bg (selected, soft chips)          */
+  --accent-soft-bd: #5597DC59; /* border of tinted chips                    */
+
+  /* ----------------------------------------------------------------------
+     COLOR — Semantic status (matched to the app's outline buttons)
+     ---------------------------------------------------------------------- */
+  --success:        #54C084;   --success-soft: #54C0841F;  /* 已连接 / 启动 */
+  --info:           #5E9FD6;   --info-soft:    #5E9FD61F;  /* WiFi, 延迟    */
+  --warning:        #DCA844;   --warning-soft: #DCA8441F;  /* 关闭 / warn   */
+  --danger:         #E0746C;   --danger-soft:  #E0746C1F;  /* 断开 / 卸载   */
+  --danger-hover:   #EC857C;
+  --purple:         #A78BFA;   --purple-soft:  #A78BFA1F;  /* memory chart  */
+  --gold:           #E8B339;   /* folder / file-manager icon                */
+
+  /* Logcat level palette (Android logcat V/D/I/W/E/F) */
+  --log-verbose:    #6E7693;
+  --log-debug:      #7FB3FF;
+  --log-info:       #54C084;
+  --log-warn:       #DCA844;
+  --log-error:      #E0746C;
+  --log-fatal:      #EC6A98;
+
+  /* Performance chart series */
+  --chart-fps:      #54C084;
+  --chart-cpu:      #5E9FD6;
+  --chart-mem:      #A78BFA;
+  --chart-grid:     #2A2C47;
+  --chart-jank:     #E0746C;
+
+  /* ----------------------------------------------------------------------
+     TYPE — Families
+     Real app: native Windows stack (Segoe UI + Microsoft YaHei for CJK,
+     Cascadia Code / Consolas for mono). Browser previews load Noto Sans SC
+     + JetBrains Mono as the nearest cross-platform match.
+     ---------------------------------------------------------------------- */
+  --font-sans: "Segoe UI", system-ui, -apple-system, "Noto Sans SC",
+               "Microsoft YaHei", "PingFang SC", Roboto, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", "Consolas", ui-monospace,
+               "SFMono-Regular", Menlo, monospace;
+
+  /* TYPE — Scale (compact desktop-tool rhythm; base 13px) */
+  --fs-display: 20px;  --lh-display: 28px;   /* page / modal titles        */
+  --fs-h2:      16px;  --lh-h2:      24px;   /* panel headers (应用安装)    */
+  --fs-h3:      14px;  --lh-h3:      20px;   /* card / group titles        */
+  --fs-body:    13px;  --lh-body:    20px;   /* default UI text            */
+  --fs-sm:      12px;  --lh-sm:      18px;   /* secondary / dense tables   */
+  --fs-label:   11px;  --lh-label:   16px;   /* eyebrow labels (uppercase) */
+  --fs-mono:    12px;  --lh-mono:    18px;   /* logcat, SN, package names  */
+  --fs-metric:  22px;  --lh-metric:  26px;   /* big numbers (FPS, CPU%)    */
+
+  --fw-regular: 400;
+  --fw-medium:  500;
+  --fw-semibold:600;
+  --fw-bold:    700;
+  --tracking-label: 0.06em;
+
+  /* ----------------------------------------------------------------------
+     SPACING — 4px base scale
+     ---------------------------------------------------------------------- */
+  --sp-1: 2px;  --sp-2: 4px;  --sp-3: 6px;  --sp-4: 8px;  --sp-5: 12px;
+  --sp-6: 16px; --sp-7: 20px; --sp-8: 24px; --sp-9: 32px; --sp-10: 40px;
+
+  /* RADII — the app uses generously rounded cards + ~6px controls */
+  --r-xs: 4px;   /* tags, chips           */
+  --r-sm: 6px;   /* buttons, inputs       */
+  --r-md: 10px;  /* cards, panels         */
+  --r-lg: 14px;  /* modals                */
+  --r-pill: 999px;
+
+  /* ELEVATION — dark theme leans on borders; shadows are deep + soft */
+  --sh-sm:  0 1px 2px rgba(0,0,0,0.34);
+  --sh-md:  0 6px 18px rgba(0,0,0,0.42);
+  --sh-pop: 0 10px 28px rgba(0,0,0,0.48);
+  --sh-modal: 0 24px 64px rgba(0,0,0,0.58);
+  --ring-focus: 0 0 0 2px var(--bg-base), 0 0 0 4px var(--accent);
+
+  /* MOTION — quick, functional. No bounces in a utility tool. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 110ms;
+  --dur-med:  170ms;
+}
+
+/* =========================================================================
+   SEMANTIC ELEMENT DEFAULTS — apply the tokens. Import this file and these
+   base rules give you the product's look for free.
+   ========================================================================= */
+.adm-root,
+body.adm {
+  background: var(--bg-base);
+  color: var(--fg-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, .adm-h1 { font-size: var(--fs-display); line-height: var(--lh-display);
+  font-weight: var(--fw-bold); color: var(--fg-primary); margin: 0; }
+h2, .adm-h2 { font-size: var(--fs-h2); line-height: var(--lh-h2);
+  font-weight: var(--fw-bold); color: var(--fg-primary); margin: 0; }
+h3, .adm-h3 { font-size: var(--fs-h3); line-height: var(--lh-h3);
+  font-weight: var(--fw-semibold); color: var(--fg-primary); margin: 0; }
+
+.adm-label {
+  font-size: var(--fs-label); line-height: var(--lh-label);
+  font-weight: var(--fw-semibold); letter-spacing: var(--tracking-label);
+  text-transform: uppercase; color: var(--fg-tertiary);
+}
+.adm-mono { font-family: var(--font-mono); font-size: var(--fs-mono);
+  line-height: var(--lh-mono); }
+.adm-metric { font-family: var(--font-mono); font-size: var(--fs-metric);
+  line-height: var(--lh-metric); font-weight: var(--fw-semibold);
+  color: var(--fg-primary); font-variant-numeric: tabular-nums; }
