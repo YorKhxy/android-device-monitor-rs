@@ -88,9 +88,9 @@ pub fn run() {
             commands::transfer::pull_device_file,
             commands::transfer::pull_device_files,
             commands::transfer::push_device_file,
-            commands::resume_transfers,
-            commands::discard_transfers,
-            commands::get_resume_batches,
+            commands::transfer::resume_transfers,
+            commands::transfer::discard_transfers,
+            commands::transfer::get_resume_batches,
             // 系统/杂项
             commands::show_item_in_folder,
             commands::open_path,

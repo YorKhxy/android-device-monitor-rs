@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use super::journal;
 use crate::adb::error::AdbError;
 use crate::adb::manager::exec_adb_capture;
 
@@ -59,7 +60,7 @@ fn emit_pull(app: &AppHandle, p: PullProgress) {
 }
 
 /// 设备端路径拼接（统一用 `/`）。
-fn remote_join(dir: &str, name: &str) -> String {
+pub(crate) fn remote_join(dir: &str, name: &str) -> String {
     if dir.ends_with('/') {
         format!("{dir}{name}")
     } else {
@@ -70,18 +71,23 @@ fn remote_join(dir: &str, name: &str) -> String {
 /// 设备端 shell 命令的路径转义：`adb shell mv/rm` 会把参数拼成字符串交设备 shell 二次解析，
 /// 含空格/元字符的文件名需单引号包裹（内部单引号转义为 `'\''`），否则被词拆破裂。
 /// 注：`adb push/pull` 是直传不过 shell，无需转义。
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// 批量上传：逐个 adb push 到设备 remote_dir，临时名 `.part` + `mv` 原子落地。返回成功文件数。
+///
+/// `progress_id`：进度 event 通道 id（新建传输=uploadId，恢复=transferId）。
+/// `batch_id`：journal 批次 id（新建=uploadId，恢复=原批次 id）——两者在新建时相同、恢复时分离。
+/// 调用方负责 begin_batch（落 pending）与传完后 remove_batch；本函数只逐文件流转状态。
 pub async fn push_files(
     app: &AppHandle,
     adb: &Path,
     device_id: &str,
     remote_dir: &str,
     local_paths: &[String],
-    upload_id: &str,
+    progress_id: &str,
+    batch_id: &str,
 ) -> u32 {
     let total = local_paths.len() as u32;
     let mut succeeded: u32 = 0;
@@ -92,8 +98,9 @@ pub async fn push_files(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| local.clone());
+        journal::mark(batch_id, &file_name, "transferring");
         emit_push(app, PushProgress {
-            upload_id: upload_id.to_string(),
+            upload_id: progress_id.to_string(),
             file_name: file_name.clone(),
             index,
             total,
@@ -126,8 +133,9 @@ pub async fn push_files(
                 .await;
                 if matches!(&mv, Ok(o) if o.success) {
                     succeeded += 1;
+                    journal::mark(batch_id, &file_name, "done");
                     emit_push(app, PushProgress {
-                        upload_id: upload_id.to_string(),
+                        upload_id: progress_id.to_string(),
                         file_name,
                         index,
                         total,
@@ -138,17 +146,20 @@ pub async fn push_files(
                 } else {
                     let err = mv.err().map(|e| e.message).unwrap_or_else(|| "落地失败".to_string());
                     let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
-                    emit_push(app, push_error(upload_id, &file_name, index, total, err));
+                    journal::mark(batch_id, &file_name, "failed");
+                    emit_push(app, push_error(progress_id, &file_name, index, total, err));
                 }
             }
             Ok(out) => {
                 let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
                 let msg = out.stderr.trim();
-                emit_push(app, push_error(upload_id, &file_name, index, total, if msg.is_empty() { "上传失败".to_string() } else { msg.to_string() }));
+                journal::mark(batch_id, &file_name, "failed");
+                emit_push(app, push_error(progress_id, &file_name, index, total, if msg.is_empty() { "上传失败".to_string() } else { msg.to_string() }));
             }
             Err(e) => {
                 let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
-                emit_push(app, push_error(upload_id, &file_name, index, total, e.message));
+                journal::mark(batch_id, &file_name, "failed");
+                emit_push(app, push_error(progress_id, &file_name, index, total, e.message));
             }
         }
     }
@@ -174,13 +185,16 @@ pub struct PullOutcome {
 }
 
 /// 批量下载到本地 save_dir：逐个 adb pull 到临时名 `.part` + rename 原子落地。
+///
+/// `progress_id`/`batch_id` 含义同 push_files。调用方负责 begin_batch / remove_batch。
 pub async fn pull_files(
     app: &AppHandle,
     adb: &Path,
     device_id: &str,
     items: &[PullItem],
-    pull_id: &str,
+    progress_id: &str,
     save_dir: &Path,
+    batch_id: &str,
 ) -> Result<PullOutcome, AdbError> {
     tokio::fs::create_dir_all(save_dir).await.map_err(|e| {
         AdbError::custom("TRANSFER_FAILED", format!("创建下载目录失败：{e}"), "检查下载目录写权限。", e.to_string())
@@ -192,8 +206,9 @@ pub async fn pull_files(
 
     for (i, item) in items.iter().enumerate() {
         let index = i as u32;
+        journal::mark(batch_id, &item.name, "transferring");
         emit_pull(app, PullProgress {
-            pull_id: pull_id.to_string(),
+            pull_id: progress_id.to_string(),
             file_name: item.name.clone(),
             index,
             total,
@@ -236,8 +251,9 @@ pub async fn pull_files(
         match final_err {
             None => {
                 succeeded += 1;
+                journal::mark(batch_id, &item.name, "done");
                 emit_pull(app, PullProgress {
-                    pull_id: pull_id.to_string(),
+                    pull_id: progress_id.to_string(),
                     file_name: item.name.clone(),
                     index,
                     total,
@@ -248,8 +264,9 @@ pub async fn pull_files(
             Some(err) => {
                 let _ = tokio::fs::remove_file(&local_tmp).await; // 清半成品
                 failed += 1;
+                journal::mark(batch_id, &item.name, "failed");
                 emit_pull(app, PullProgress {
-                    pull_id: pull_id.to_string(),
+                    pull_id: progress_id.to_string(),
                     file_name: item.name.clone(),
                     index,
                     total,

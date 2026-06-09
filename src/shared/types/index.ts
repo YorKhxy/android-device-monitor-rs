@@ -79,7 +79,7 @@ export type TransferDirection = 'upload' | 'download';
 export type TransferTaskStatus = 'pending' | 'transferring' | 'done' | 'failed';
 
 /**
- * 一次文件传输任务（批量中的单个文件）。持久化到 userData/transfer-journal.json，
+ * 一次文件传输任务（批量中的单个文件）。持久化到运行时根目录（exe 同目录）的 transfer-journal.json，
  * 用于进程崩溃 / 被强杀后识别未完成任务并文件级续传。只有停留在 pending/transferring
  * 的任务才算「需恢复的残留」；用户主动取消或失败的任务在了结时即移除，不进恢复队列。
  */

@@ -19,11 +19,6 @@ use serde_json::{json, Value};
 
 use crate::runtime_root::resolve_runtime_app_root;
 
-/// 列表类占位：返回空数组，让前端走“空状态”而非崩溃。
-fn ok_list() -> Value {
-    json!({ "success": true, "data": [] })
-}
-
 /// 标量/对象类占位：返回未实现错误，前端按 ElectronResult.success=false 处理。
 fn stub() -> Value {
     json!({ "success": false, "error": "占位：该能力将在后续 Phase 实现" })
@@ -58,10 +53,7 @@ fn stub() -> Value {
 #[tauri::command] pub fn query_weaknet_shaper_stats() -> Value { json!({ "success": true, "data": null }) }
 
 // ——— 文件管理/传输 ——（list/delete/create/select_upload → commands::files T4-1；
-//     push/pull → commands::transfer T4-2；resume/discard/get_resume_batches 待 T4-3）—
-#[tauri::command] pub fn resume_transfers() -> Value { stub() }
-#[tauri::command] pub fn discard_transfers() -> Value { stub() }
-#[tauri::command] pub fn get_resume_batches() -> Value { ok_list() }
+//     push/pull → commands::transfer T4-2；resume/discard/get_resume_batches → commands::transfer T4-3）—
 
 // ——— 系统/杂项 ———
 #[tauri::command] pub fn show_item_in_folder() -> Value { stub() }
