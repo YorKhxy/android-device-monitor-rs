@@ -34,10 +34,10 @@
 - 🚧 **P4 文件管理与传输 + 日志（进行中）**：前端组件（FilesPanel.tsx、SimpleApp 日志逻辑）整体就位，后端从桩逐个实现。拆成 5 个实现 Task：
   - ✅ **T4-1 文件浏览+增删**（`commands/files.rs`）：list_device_files（ls -al 日期锚定解析）/delete/create/select_upload。commit `c4f32d3`，cargo test 通过，两阶段 review 过。
   - ✅ **T4-2 批量传输 runner+进度**（`transfer/runner.rs` + `commands/transfer.rs`）：push/pull 批量、push_progress/pull_progress、`.part` 原子落地、shell_quote 转义、pull 覆盖式落地。commit `ffc026d`，cargo test 21/21，两阶段 review 过。
-  - ⏭ **T4-3 传输 journal + 中断恢复 + 关界面续显**（待做，`transfer/journal.rs`）：把 journal 持久化（transfer-journal.json 落运行时根目录）织进 T4-2 的 push/pull 流程——开传输建批次、每文件更新状态、了结即清理；仅崩溃/被杀残留进恢复队列；退出钩子 flush。命令 resume_transfers/discard_transfers/get_resume_batches（当前仍桩）。batchId 可复用 uploadId/pullId。
+  - ✅ **T4-3 传输 journal + 中断恢复 + 关界面续显**（`transfer/journal.rs`）：journal 落运行时根目录 transfer-journal.json（原子写 .tmp+rename），状态 pending/transferring/done/failed 流转；push/pull 前 begin_batch、后 remove_batch（了结即清理）；resume_transfers 文件级续传(已 done 跳过)、discard_transfers 清 .part+移 journal、get_resume_batches 汇总残留；仅崩溃/被杀残留进恢复队列；关界面续显由前端 fileTransferManager 单例承担。commit `3c08eb1`，cargo test 24/24，两阶段 review 过。真机待验：强杀后续传 / 丢弃清残留。
   - ⏭ **T4-4 Logcat 流式抓取+解析+批量推送**（待做，`commands/logcat.rs`）：流式 adb logcat -v long、条目边界切分解析(LogEntry)、多行合并、log_batch 批量推送(≤200/批 250ms 队列1000)、包名相关日志口径。复用 `adb/pico_metrics_stream.rs` 常驻流模式 + BufReader lines。命令 start_logcat/stop_logcat（仍桩）。
   - ⏭ **T4-5 日志导出+完整日志录制**（待做，依赖 T4-4，`logging/`）：export_logs/export_full_logs/export_full_logs_by_package（仍桩）；完整日志落 exe 同目录 `device-logs/`（`runtime_root::device_logs_dir`，铁律）；日志打包复用 zip crate（`performance/capture_transfer.rs` 模式）。
-  - 📌 接续提示：新会话直接 `/dev-builder` 继续 P4，从 T4-3 起。后端可复用基线：`adb/manager.rs` exec_adb/exec_adb_capture、`adb/pico_metrics_stream.rs`（流式）、`performance/capture_transfer.rs`（zip）、`runtime_root.rs`（路径）、`transfer/runner.rs` 的 shell_quote。依赖（tokio/zip/chrono/regex）已就位，无需新增。
+  - 📌 接续提示：新会话直接 `/dev-builder` 继续 P4，从 **T4-4 Logcat 流式抓取** 起。后端可复用基线：`adb/pico_metrics_stream.rs`（常驻流式 + BufReader lines + kill_on_drop，logcat 直接照搬此模式）、`adb/manager.rs` exec_adb/exec_adb_capture、`performance/capture_transfer.rs`（zip，留给 T4-5）、`runtime_root.rs`（`device_logs_dir` 留给 T4-5）。依赖（tokio/zip/chrono/regex）已就位，无需新增。
 - ⬜ **P5–P7**：弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
   - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
   - 📌 独立待修（chip）：`commands/files.rs` 的 delete/create 设备路径同样需 shell_quote 转义（含空格名会破裂），参照 `transfer/runner.rs`。
