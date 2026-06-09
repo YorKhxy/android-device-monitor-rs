@@ -10,6 +10,7 @@
 
 pub mod apps;
 pub mod capture_io;
+pub mod mirror;
 pub mod performance;
 
 use serde_json::{json, Value};
@@ -35,9 +36,7 @@ fn stub() -> Value {
 
 // ——— 运行情况 ——（get_processes / get_running_packages / get_activity_stack 已由 commands::performance 接管）—
 
-// ——— 投屏 ———
-#[tauri::command] pub fn start_mirror() -> Value { stub() }
-#[tauri::command] pub fn stop_mirror() -> Value { stub() }
+// ——— 投屏 ——（start_mirror / stop_mirror 已由 commands::mirror 接管，T3.3）—
 #[tauri::command] pub fn set_mirror_audio() -> Value { stub() }
 
 // ——— 更新 ———

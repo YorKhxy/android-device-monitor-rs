@@ -5,6 +5,7 @@
 
 mod adb;
 mod commands;
+mod mirror;
 mod performance;
 mod runtime_root;
 
@@ -53,9 +54,9 @@ pub fn run() {
             commands::capture_io::select_import_files,
             commands::capture_io::import_capture_sessions,
             commands::capture_io::export_performance_session,
-            // 投屏
-            commands::start_mirror,
-            commands::stop_mirror,
+            // 投屏（start/stop T3.3 真实现）
+            commands::mirror::start_mirror,
+            commands::mirror::stop_mirror,
             commands::set_mirror_audio,
             // 更新
             commands::check_for_update,
@@ -112,6 +113,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move {
                     performance::capture_controller::stop_all(&app).await;
                     adb::pico_metrics_stream::stop_all().await;
+                    mirror::stop_all().await;
                 });
             }
         });
