@@ -283,7 +283,7 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
             max={Math.round(totalMs)}
             value={Math.round(playheadMs)}
             onChange={(e) => seekTo(Number(e.target.value))}
-            style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer' }}
+            style={{ flex: 1, minWidth: 0, accentColor: 'var(--accent)', cursor: 'pointer' }}
             aria-label="采集时间轴"
           />
           <div style={{ color: 'var(--fg-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
