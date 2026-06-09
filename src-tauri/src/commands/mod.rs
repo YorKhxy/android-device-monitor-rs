@@ -36,8 +36,7 @@ fn stub() -> Value {
 
 // ——— 运行情况 ——（get_processes / get_running_packages / get_activity_stack 已由 commands::performance 接管）—
 
-// ——— 投屏 ——（start_mirror / stop_mirror 已由 commands::mirror 接管，T3.3）—
-#[tauri::command] pub fn set_mirror_audio() -> Value { stub() }
+// ——— 投屏 ——（start_mirror / stop_mirror / set_mirror_audio 已由 commands::mirror 接管，T3.3/T3.5）—
 
 // ——— 更新 ———
 #[tauri::command] pub fn check_for_update() -> Value { stub() }

@@ -62,8 +62,7 @@ pub struct MirrorStartOptions {
     pub is_pico: Option<bool>,
     pub max_size: Option<u32>,
     pub bit_rate: Option<String>,
-    /// 启动时是否直接把声音转电脑（T3.5 据此在投屏后起音频进程）。
-    #[allow(dead_code)]
+    /// 启动时是否直接把声音转电脑（T3.5：投屏成功后据此起音频进程）。
     pub forward_audio: Option<bool>,
 }
 
@@ -95,6 +94,27 @@ pub fn build_video_args(
         .unwrap_or_else(|| format!("投屏 - {device_id}"));
     args.push(format!("--window-title={title}"));
     args
+}
+
+/// 构建独立「纯音频」scrcpy 进程参数（无视频/无操控/无窗口，仅把设备声音转电脑）。
+/// 返回 (参数, 音频模式)：
+/// - Android 13+（API≥33）：--audio-dup（隐含 --audio-source=playback），设备与电脑同时出声 → "both"
+/// - 低版本：--audio-source=output，设备静音、仅电脑出声 → "pc-only"
+pub fn build_audio_args(device_id: &str, api_level: Option<u32>) -> (Vec<String>, &'static str) {
+    let mut args = vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "--no-video".to_string(),
+        "--no-control".to_string(),
+        "--no-window".to_string(),
+    ];
+    if api_level.is_some_and(|v| v >= 33) {
+        args.push("--audio-dup".to_string());
+        (args, "both")
+    } else {
+        args.push("--audio-source=output".to_string());
+        (args, "pc-only")
+    }
 }
 
 /// 解析 `adb shell wm size` 输出的屏幕分辨率，返回 (宽, 高)。
@@ -176,6 +196,27 @@ mod tests {
     fn parse_screen_size_falls_back_to_physical() {
         assert_eq!(parse_screen_size("Physical size: 3840x1920"), Some((3840, 1920)));
         assert_eq!(parse_screen_size("garbage"), None);
+    }
+
+    #[test]
+    fn audio_args_dup_for_android13_plus() {
+        let (args, mode) = build_audio_args("d1", Some(33));
+        assert_eq!(mode, "both");
+        assert!(args.contains(&"--audio-dup".to_string()));
+        assert!(args.contains(&"--no-video".to_string()));
+        assert!(args.contains(&"--no-control".to_string()));
+        assert!(args.contains(&"--no-window".to_string()));
+        assert!(!args.iter().any(|a| a.starts_with("--audio-source")));
+    }
+
+    #[test]
+    fn audio_args_output_fallback_below_13_or_unknown() {
+        for api in [Some(30u32), None] {
+            let (args, mode) = build_audio_args("d1", api);
+            assert_eq!(mode, "pc-only");
+            assert!(args.contains(&"--audio-source=output".to_string()));
+            assert!(!args.contains(&"--audio-dup".to_string()));
+        }
     }
 
     #[test]

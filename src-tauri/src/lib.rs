@@ -54,10 +54,10 @@ pub fn run() {
             commands::capture_io::select_import_files,
             commands::capture_io::import_capture_sessions,
             commands::capture_io::export_performance_session,
-            // 投屏（start/stop T3.3 真实现）
+            // 投屏（start/stop T3.3、set_mirror_audio T3.5 真实现）
             commands::mirror::start_mirror,
             commands::mirror::stop_mirror,
-            commands::set_mirror_audio,
+            commands::mirror::set_mirror_audio,
             // 更新
             commands::check_for_update,
             commands::get_update_status,
