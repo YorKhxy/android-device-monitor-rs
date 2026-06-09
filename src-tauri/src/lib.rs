@@ -46,7 +46,6 @@ pub fn run() {
             commands::get_processes,
             commands::get_running_packages,
             commands::get_activity_stack,
-            commands::get_network_requests,
             // 投屏
             commands::start_mirror,
             commands::stop_mirror,

@@ -19,7 +19,7 @@
 android-device-monitor-rs/
 ├── src/                          # 前端（React 18 + Tailwind，从原 src/renderer 整体搬入）
 │   ├── SimpleApp.tsx             # 根组件（沿用）
-│   ├── components/               # 各面板（沿用：PerformancePanel/NetworkPanel/FilesPanel/MirrorPanel/WeakNetPanel/CaptureChart...）
+│   ├── components/               # 各面板（沿用：PerformancePanel/FilesPanel/MirrorPanel/WeakNetPanel/CaptureChart...；网络模块已删）
 │   ├── lib/tauriApi.ts           # 【新】取代 electronApi.ts：对 @tauri-apps/api 的 invoke/listen 封装
 │   └── styles/                   # Tailwind 与组件样式（沿用）
 ├── src-tauri/                    # 后端（Rust）
@@ -138,7 +138,6 @@ android-device-monitor-rs/
 - **T2.7 采集回看 + 媒体协议**：`performance/media.rs` 对应原 `performanceMedia.ts`——自定义协议把 `performance-recordings/...` 相对路径映射到磁盘文件供前端播放（Tauri 用 `asset:` 协议或自定义 protocol；UI 不暴露宿主绝对路径）。回看加载曲线+视频、删除（二次确认连数据带视频）、视频快捷截图归档到该次采集截图子目录。
 - **T2.8 会话导出**：`performance/session_export.rs` 对应原 `performanceSessionExport.ts`，用 **rust_xlsxwriter** 导出 xlsx 工作簿（统一取 `metrics.fps`）。
 - **T2.9 时间轴联动 + 过滤打标记（后端数据支撑）**：报告曲线多选/隔离逻辑前端已有；后端提供采样数据与按指标阈值（`>`/`=`/`<`，多条件、各自按指标标记不做 AND 交集）所需数据接口。
-- **T2.10 网络请求**：网络请求捕获与详情（请求头/响应/耗时）后端实现（对应原 NetworkPanel 后端能力）。
 
 **关键文件**：
 - `src-tauri/src/commands/apps.rs` — 应用列表/启停/卸载/安装

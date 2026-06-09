@@ -134,25 +134,6 @@ export interface LogEntry {
   packageName?: string;
 }
 
-export interface NetworkRequest {
-  id: string;
-  timestamp: Date;
-  packageName: string;
-  method: string;
-  url: string;
-  statusCode: number;
-  statusText?: string;
-  path?: string;
-  host?: string;
-  requestBody?: string;
-  responseBody?: string;
-  headers: Record<string, string>;
-  responseHeaders?: Record<string, string>;
-  rawRequest?: string;
-  rawResponse?: string;
-  duration: number;
-}
-
 export interface ApkInstallResult {
   apkPath: string;
   output: string;

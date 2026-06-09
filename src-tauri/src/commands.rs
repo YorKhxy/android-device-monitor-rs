@@ -49,7 +49,6 @@ fn stub() -> Value {
 #[tauri::command] pub fn get_processes() -> Value { ok_list() }
 #[tauri::command] pub fn get_running_packages() -> Value { ok_list() }
 #[tauri::command] pub fn get_activity_stack() -> Value { ok_list() }
-#[tauri::command] pub fn get_network_requests() -> Value { ok_list() }
 
 // ——— 投屏 ———
 #[tauri::command] pub fn start_mirror() -> Value { stub() }

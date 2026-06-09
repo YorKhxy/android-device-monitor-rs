@@ -6,7 +6,6 @@ import type {
   LogEntry,
   MirrorSession,
   MirrorStartOptions,
-  NetworkRequest,
   PerformanceMetrics,
   PerformanceSessionExportPayload,
   PerformanceCaptureSession,
@@ -72,7 +71,6 @@ export interface ElectronAPI {
   getRunningPackages: (deviceId: string) => Promise<ElectronResult<string[]>>;
   connectUSB: () => Promise<ElectronResult<DeviceInfo[]>>;
   getActivityStack: (deviceId: string, packageName?: string) => Promise<ElectronResult<ActivityStackEntry[]>>;
-  getNetworkRequests: (deviceId: string, packageName?: string) => Promise<ElectronResult<NetworkRequest[]>>;
   startMirror: (deviceId: string, options?: MirrorStartOptions) => Promise<ElectronResult<MirrorSession>>;
   stopMirror: (deviceId: string) => Promise<ElectronResult<undefined>>;
   setMirrorAudio: (deviceId: string, forward: boolean) => Promise<ElectronResult<MirrorSession>>;

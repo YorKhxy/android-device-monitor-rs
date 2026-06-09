@@ -73,7 +73,6 @@ const api: ElectronAPI = {
   getProcesses: (deviceId) => call('get_processes', { deviceId }),
   getRunningPackages: (deviceId) => call('get_running_packages', { deviceId }),
   getActivityStack: (deviceId, packageName) => call('get_activity_stack', { deviceId, packageName }),
-  getNetworkRequests: (deviceId, packageName) => call('get_network_requests', { deviceId, packageName }),
 
   // —— 投屏 ——
   startMirror: (deviceId, options) => call('start_mirror', { deviceId, options }),

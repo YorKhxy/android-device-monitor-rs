@@ -1,6 +1,5 @@
 ﻿import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
-import { AdbStatus, DeviceInfo, HistoryDevice, MirrorSession, PerformanceMetrics, PerformanceCaptureSession, PerformanceCaptureSessionDetail, PerformanceCaptureMarker, PerformanceSample, LogEntry, NetworkRequest, WeakNetworkHelperStatus, WeakNetworkProfile, WeakNetworkShaperStats, UpdateStatus } from '../shared/types';
-import { NetworkPanel } from './components/NetworkPanel';
+import { AdbStatus, DeviceInfo, HistoryDevice, MirrorSession, PerformanceMetrics, PerformanceCaptureSession, PerformanceCaptureSessionDetail, PerformanceCaptureMarker, PerformanceSample, LogEntry, WeakNetworkHelperStatus, WeakNetworkProfile, WeakNetworkShaperStats, UpdateStatus } from '../shared/types';
 import { PerformancePanel } from './components/PerformancePanel';
 import { MirrorPanel } from './components/MirrorPanel';
 import { FilesPanel } from './components/FilesPanel';
@@ -62,7 +61,7 @@ const isLikelyPicoDevice = (device: DeviceInfo | null): boolean => {
   return identity.includes('pico') || identity.includes('a9210') || identity.includes('sparrow');
 };
 
-type TabType = 'devices' | 'logs' | 'performance' | 'network' | 'mirror' | 'weaknet';
+type TabType = 'devices' | 'logs' | 'performance' | 'mirror' | 'weaknet';
 type LogLevelFilter = LogEntry['level'] | 'all';
 type ApkInstallStatus = 'queued' | 'installing' | 'success' | 'failed';
 
@@ -272,8 +271,6 @@ function SimpleApp() {
     },
     []
   );
-  const [networkRequests, setNetworkRequests] = useState<NetworkRequest[]>([]);
-  const [selectedNetworkRequestId, setSelectedNetworkRequestId] = useState<string | null>(null);
   const [runningLogDeviceIds, setRunningLogDeviceIds] = useState<Set<string>>(() => new Set());
   const [wifiIp, setWifiIp] = useState('');
   // 历史 WiFi 设备（快速重连）。初始从 localStorage 读取，已按最近连接时间倒序。
@@ -871,12 +868,6 @@ function SimpleApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDevice?.id, selectedDevice?.status, activeTab]);
 
-  useEffect(() => {
-    setSelectedNetworkRequestId(null);
-    if (!selectedDevice) {
-      setNetworkRequests([]);
-    }
-  }, [selectedDevice]);
 
   
 
@@ -1825,27 +1816,6 @@ function SimpleApp() {
     } finally {
       await withMinCooldown(startedAt, 500);
       setBusyDeviceAction(null);
-    }
-  };
-
-  const loadNetworkRequests = async () => {
-    if (!selectedDevice || !hasElectronAPI()) return;
-    try {
-      setError('');
-      const result = await window.electronAPI!.getNetworkRequests(selectedDevice.id, packageFilter.trim() || undefined);
-      if (result.success && result.data) {
-        setNetworkRequests(result.data);
-        setSelectedNetworkRequestId(result.data[0]?.id || null);
-        setError('');
-      } else {
-        setNetworkRequests([]);
-        setSelectedNetworkRequestId(null);
-        setError(result.error || '\u52a0\u8f7d\u8bbe\u5907\u5931\u8d25');
-      }
-    } catch (err) {
-      setNetworkRequests([]);
-      setSelectedNetworkRequestId(null);
-      setError('\u7f51\u7edc\u6293\u53d6\u5931\u8d25\uff1a' + (err as Error).message);
     }
   };
 
@@ -3456,7 +3426,6 @@ function SimpleApp() {
                   { key: 'devices' as TabType, label: '\u8bbe\u5907', icon: 'smartphone' },
                   { key: 'logs' as TabType, label: '\u65e5\u5fd7', icon: 'scroll-text' },
                   { key: 'performance' as TabType, label: '\u6027\u80fd', icon: 'activity' },
-                  { key: 'network' as TabType, label: '\u7f51\u7edc', icon: 'network' },
                   { key: 'mirror' as TabType, label: '\u6295\u5c4f', icon: 'cast' },
                   { key: 'weaknet' as TabType, label: '\u5f31\u7f51', icon: 'wifi-off' },
                 ].map(tab => (
@@ -3613,17 +3582,6 @@ function SimpleApp() {
                     onExportSession={exportPerformanceSession}
                     lastExportedCapturePath={lastExportedCapturePath}
                     onRevealExportedCapture={revealExportedCapture}
-                  />
-                )}
-
-                {activeTab === 'network' && (
-                  <NetworkPanel
-                    packageFilter={packageFilter}
-                    onPackageFilterChange={setPackageFilter}
-                    networkRequests={networkRequests}
-                    selectedNetworkRequestId={selectedNetworkRequestId}
-                    onSelectNetworkRequest={setSelectedNetworkRequestId}
-                    onCaptureRequests={loadNetworkRequests}
                   />
                 )}
 
