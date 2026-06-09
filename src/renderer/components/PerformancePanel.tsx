@@ -27,6 +27,9 @@ type PerformancePanelProps = {
   /** 当前在报告区展示的会话 id（列表高亮用）。 */
   loadedSessionId: string | null;
   onToggleCapture: () => void;
+  /** 录制设备声音开关（含音采集，仅设备 A13+ 支持）。 */
+  recordAudio: boolean;
+  onToggleRecordAudio: (next: boolean) => void;
   onDismissSoftLimit: () => void;
   onSaveCaptureMarkers: (sessionId: string, markers: PerformanceCaptureMarker[]) => void;
   onSaveCaptureFrame: (sessionId: string, dataUrl: string) => Promise<string | undefined>;
@@ -118,6 +121,8 @@ export function PerformancePanel({
   captureSessions,
   loadedSessionId,
   onToggleCapture,
+  recordAudio,
+  onToggleRecordAudio,
   onDismissSoftLimit,
   onSaveCaptureMarkers,
   onSaveCaptureFrame,
@@ -139,6 +144,9 @@ export function PerformancePanel({
   const [captureTypeFilter, setCaptureTypeFilter] = useState<'all' | 'android' | 'pico'>('all');
   // 回放时播放头处的样本（由 CaptureReport 上抛）：让「前台应用 + 参数」块跟随回放数据而非实时设备。
   const [playbackSample, setPlaybackSample] = useState<PerformanceSample | null>(null);
+  // 含音录制仅 Android 13+（API≥33）支持：低版本设备开关置灰；采集中/忙时也不可改。
+  const audioSupported = (device?.apiLevel ?? 0) >= 33;
+  const audioToggleLocked = !device || isCapturing || isCaptureBusy || !audioSupported;
 
   const handleImportDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -198,6 +206,30 @@ export function PerformancePanel({
               <span>当前设备正在投屏：投屏会额外占用编码器与带宽，增加设备负载、轻微影响性能读数。追求更准的数据可先停止投屏再采集。</span>
             </div>
           )}
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '12px',
+              color: 'var(--fg-secondary)',
+              cursor: audioToggleLocked ? 'not-allowed' : 'pointer',
+              opacity: audioToggleLocked ? 0.6 : 1,
+            }}
+            title="开启后采集录像带设备声音（设备与电脑同时出声，回看可听）。仅 Android 13+ 支持；采集中不可改。"
+          >
+            <input
+              type="checkbox"
+              checked={recordAudio && audioSupported}
+              disabled={audioToggleLocked}
+              onChange={(e) => onToggleRecordAudio(e.target.checked)}
+              style={{ accentColor: 'var(--accent)', cursor: audioToggleLocked ? 'not-allowed' : 'pointer' }}
+            />
+            录制设备声音
+            {device && !audioSupported && (
+              <span style={{ color: 'var(--fg-tertiary)' }}>（该设备不支持，需 Android 13+）</span>
+            )}
+          </label>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <button
               onClick={onToggleCapture}

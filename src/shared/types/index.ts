@@ -249,6 +249,8 @@ export interface PerformanceCaptureSession {
   durationMs: number;
   /** Pico：播放时按单眼区域裁切显示 */
   singleEyeVideo?: boolean;
+  /** 本次录像是否含音频轨（开「录制设备声音」且设备 A13+ 支持含音录制时为 true，否则无声） */
+  audioRecorded?: boolean;
   /** 分段视频（按时序），缝合为连续轴 */
   videoSegments: PerformanceCaptureSegment[];
   /** 样本数据文件相对路径（performance-captures/<id>/data/samples.jsonl） */

@@ -55,7 +55,7 @@ const api: ElectronAPI = {
 
   // —— 性能/采集 ——
   getPerformance: (deviceId) => call('get_performance', { deviceId }),
-  startCaptureSession: (deviceId) => call('start_capture_session', { deviceId }),
+  startCaptureSession: (deviceId, recordAudio) => call('start_capture_session', { deviceId, recordAudio }),
   stopCaptureSession: (deviceId) => call('stop_capture_session', { deviceId }),
   getActiveCaptureSessions: () => call('get_active_capture_sessions'),
   listCaptureSessions: () => call('list_capture_sessions'),

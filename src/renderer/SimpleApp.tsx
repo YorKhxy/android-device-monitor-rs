@@ -220,6 +220,8 @@ function SimpleApp() {
   // 进行中的采集会话（点开始采集时设入，关闭后移除）；start/stop 异步进行中集合。
   const [activeCaptureByDeviceId, setActiveCaptureByDeviceId] = useState<Record<string, PerformanceCaptureSession>>({});
   const [captureBusyDeviceIds, setCaptureBusyDeviceIds] = useState<Set<string>>(() => new Set());
+  // 「录制设备声音」开关（按设备）：开启且设备 A13+ 时采集走含音录制（T2.10）。
+  const [recordAudioByDeviceId, setRecordAudioByDeviceId] = useState<Record<string, boolean>>({});
   const [captureElapsedByDeviceId, setCaptureElapsedByDeviceId] = useState<Record<string, number>>({});
   const [softLimitNoticeByDeviceId, setSoftLimitNoticeByDeviceId] = useState<Record<string, string>>({});
   // 采集回看：归档会话列表（倒序）+ 当前在报告区展示的会话明细（停止采集后或点列表加载）。
@@ -1302,7 +1304,7 @@ function SimpleApp() {
           delete next[deviceId];
           return next;
         });
-        const result = await window.electronAPI!.startCaptureSession(deviceId);
+        const result = await window.electronAPI!.startCaptureSession(deviceId, !!recordAudioByDeviceId[deviceId]);
         if (result.success && result.data) {
           const session = result.data;
           setActiveCaptureByDeviceId((prev) => ({ ...prev, [deviceId]: session }));
@@ -3569,6 +3571,8 @@ function SimpleApp() {
                     captureSessions={captureSessions}
                     loadedSessionId={loadedSessionId}
                     onToggleCapture={toggleCaptureSession}
+                    recordAudio={Boolean(selectedDeviceId && recordAudioByDeviceId[selectedDeviceId])}
+                    onToggleRecordAudio={(next) => selectedDeviceId && setRecordAudioByDeviceId((prev) => ({ ...prev, [selectedDeviceId]: next }))}
                     onDismissSoftLimit={() => selectedDeviceId && dismissSoftLimit(selectedDeviceId)}
                     onSaveCaptureMarkers={saveCaptureMarkers}
                     onSaveCaptureFrame={saveCaptureFrame}

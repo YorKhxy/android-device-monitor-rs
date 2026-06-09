@@ -53,7 +53,7 @@ export interface ElectronAPI {
   ) => Promise<ElectronResult<undefined>>;
   stopLogcat: (deviceId: string) => Promise<ElectronResult<undefined>>;
   getPerformance: (deviceId: string) => Promise<ElectronResult<PerformanceMetrics>>;
-  startCaptureSession: (deviceId: string) => Promise<ElectronResult<PerformanceCaptureSession>>;
+  startCaptureSession: (deviceId: string, recordAudio?: boolean) => Promise<ElectronResult<PerformanceCaptureSession>>;
   stopCaptureSession: (deviceId: string) => Promise<ElectronResult<PerformanceCaptureSession>>;
   getActiveCaptureSessions: () => Promise<ElectronResult<ActiveCaptureSession[]>>;
   listCaptureSessions: () => Promise<ElectronResult<PerformanceCaptureSession[]>>;
