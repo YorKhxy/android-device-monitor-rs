@@ -75,10 +75,14 @@ pub async fn get_activity_stack(
 
 // ——— 采集会话（T2.6）———
 
-/// 开始采集（采样 + 录制同时启动）。
+/// 开始采集（采样 + 录制同时启动）。record_audio：是否录制设备声音（A13+ 走 scrcpy 含音录制，否则降级无声）。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn start_capture_session(app: AppHandle, device_id: String) -> Value {
-    match capture_controller::start(&app, &device_id).await {
+pub async fn start_capture_session(
+    app: AppHandle,
+    device_id: String,
+    record_audio: Option<bool>,
+) -> Value {
+    match capture_controller::start(&app, &device_id, record_audio.unwrap_or(false)).await {
         Ok(session) => json!({ "success": true, "data": session }),
         Err(e) => e.to_result(),
     }

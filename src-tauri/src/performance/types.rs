@@ -25,6 +25,9 @@ pub struct CaptureSession {
     pub duration_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub single_eye_video: Option<bool>,
+    /// 本次录像是否含音频轨（开「录制设备声音」且设备支持 A13+ 含音录制时为 true，否则无声）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_recorded: Option<bool>,
     pub video_segments: Vec<CaptureSegmentMeta>,
     pub data_relative_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -45,6 +48,8 @@ pub struct CreateSessionInput {
     pub device_sn: String,
     pub provider: String,
     pub single_eye_video: Option<bool>,
+    /// 本次是否含音录制（采集控制器按开关 + 设备能力判定后传入）。
+    pub audio_recorded: bool,
     pub package_name: Option<String>,
     pub activity_name: Option<String>,
 }
@@ -76,6 +81,7 @@ mod tests {
             ended_at: Some(1_700_000_010_000),
             duration_ms: 10_000,
             single_eye_video: Some(false),
+            audio_recorded: Some(true),
             video_segments: vec![CaptureSegmentMeta {
                 index: 0,
                 file_name: "seg-0.mp4".into(),

@@ -279,3 +279,34 @@ pub async fn pull_segment(
     }));
     let _ = events.send(RecorderEvent::SizeBytes(total));
 }
+
+/// scrcpy 路径段完成上报（T2.10）：段已由 scrcpy 直接录到本地 `video_dir/seg-N.mp4` 并 finalize，
+/// 无需 pull/删设备端临时文件；stat 本地大小，空段（被打断未写出/finalize 损坏成 0）清掉不上报，
+/// 有效段上报分段 + 累计体积。与 pull_segment 对齐，差别仅在不经设备端拉取。
+pub async fn finalize_local_segment(
+    index: u32,
+    start_ms: u64,
+    end_ms: u64,
+    video_dir: PathBuf,
+    total_bytes: Arc<AtomicU64>,
+    events: RecorderSender,
+) {
+    let file_name = format!("seg-{index}.mp4");
+    let local = video_dir.join(&file_name);
+
+    let size = tokio::fs::metadata(&local).await.map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        let _ = tokio::fs::remove_file(&local).await;
+        return;
+    }
+
+    let total = total_bytes.fetch_add(size, Ordering::SeqCst) + size;
+    let _ = events.send(RecorderEvent::Segment(CaptureSegmentMeta {
+        index,
+        file_name,
+        start_ms,
+        end_ms,
+        size_bytes: size,
+    }));
+    let _ = events.send(RecorderEvent::SizeBytes(total));
+}

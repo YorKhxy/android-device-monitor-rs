@@ -15,10 +15,23 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 
 use crate::adb::binary::resolve_adb_path;
-use crate::adb::capture_recorder::{self, StartCaptureInput};
+use crate::adb::capture_recorder::{self, RecordBackend, StartCaptureInput};
 use crate::adb::capture_segment::RecorderEvent;
 use crate::adb::error::{classify_adb_error, AdbError};
+use crate::adb::manager::exec_adb;
+use crate::adb::scrcpy;
 use crate::adb::{performance_dispatch, pico_metrics, runtime_inspector};
+
+/// 含音录制要求的最低 API level（Android 13）：scrcpy --audio-dup「设备与电脑同时出声」需此版本。
+const MIN_AUDIO_API_LEVEL: u32 = 33;
+
+/// 查设备 API level（ro.build.version.sdk）；失败返回 None（→ 视为不支持含音录制，降级无声）。
+async fn query_api_level(adb: &std::path::Path, device_id: &str) -> Option<u32> {
+    let out = exec_adb(adb, &["-s", device_id, "shell", "getprop", "ro.build.version.sdk"], 8000)
+        .await
+        .ok()?;
+    out.stdout.trim().parse().ok()
+}
 
 use super::capture_store;
 use super::types::{CaptureSession, CreateSessionInput, FinalizeSessionInput};
@@ -116,13 +129,27 @@ fn check_soft_limit(
 }
 
 /// 开始采集：建会话 → 启动录制（失败则 finalize failed 并返回）→ 启动每秒采样 tick → 登记 active。
-pub async fn start(app: &AppHandle, device_id: &str) -> Result<CaptureSession, AdbError> {
+/// record_audio：用户开「录制设备声音」时为 true，且设备 A13+ 时走 scrcpy 含音录制，否则降级无声 screenrecord。
+pub async fn start(app: &AppHandle, device_id: &str, record_audio: bool) -> Result<CaptureSession, AdbError> {
     if is_active(device_id) {
         return Err(err("当前设备已在采集中。", "请先关闭当前采集，再开始新的采集。"));
     }
     let adb = match resolve_adb_path(app) {
         Some(p) => p,
         None => return Err(classify_adb_error("enoent", &[])),
+    };
+
+    // 录制后端选路：开「录制设备声音」且设备 A13+ 且内置 scrcpy 可用 → scrcpy 含音录制，否则降级无声。
+    let (backend, audio_recorded) = if record_audio {
+        let api = query_api_level(&adb, device_id).await;
+        match (api, scrcpy::resolve_scrcpy_path(app)) {
+            (Some(v), Some(scrcpy_path)) if v >= MIN_AUDIO_API_LEVEL => {
+                (RecordBackend::ScrcpyAudio { scrcpy: scrcpy_path }, true)
+            }
+            _ => (RecordBackend::Screenrecord, false),
+        }
+    } else {
+        (RecordBackend::Screenrecord, false)
     };
 
     // 先取一次指标拿前台应用写进会话元数据（失败不阻塞开始）。
@@ -146,6 +173,7 @@ pub async fn start(app: &AppHandle, device_id: &str) -> Result<CaptureSession, A
         provider: provider.to_string(),
         // Pico screenrecord 录的是双眼原图，单眼靠播放时裁切——录制端从不产出单眼文件，恒 false。
         single_eye_video: Some(false),
+        audio_recorded,
         package_name,
         activity_name,
     })
@@ -192,6 +220,7 @@ pub async fn start(app: &AppHandle, device_id: &str) -> Result<CaptureSession, A
             video_dir: video,
             bit_rate_mbps: None,
             events: tx,
+            backend,
         },
     )
     .await
