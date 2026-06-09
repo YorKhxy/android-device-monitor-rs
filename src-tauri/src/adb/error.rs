@@ -22,6 +22,16 @@ impl AdbError {
         }
     }
 
+    /// 应用层自定义错误（消息含运行期变量，如包名）。对齐原版各处 `new AdbCommandError({...})`。
+    pub fn custom(code: &str, message: String, hint: &str, details: String) -> Self {
+        AdbError {
+            code: code.to_string(),
+            message,
+            hint: Some(hint.to_string()),
+            details: Some(details),
+        }
+    }
+
     /// 转为渲染层约定的 ElectronResult 失败形状。
     pub fn to_result(&self) -> Value {
         json!({

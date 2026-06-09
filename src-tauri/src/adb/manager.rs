@@ -40,6 +40,37 @@ pub struct AdbOutput {
     pub stderr: String,
 }
 
+/// 容错执行结果：无论退出码都带回输出。
+pub struct Captured {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// 执行一次 adb，无论退出码都捕获输出（对齐原 execAdbWithExitCode）。
+/// 仅在进程无法启动 / 超时 / adb 缺失时返回 Err；非零退出仍返回 Ok，
+/// 供调用方按输出文本自定义判据（如 monkey 的 "Events injected: 1"、uninstall 的 "Success"）。
+/// 注：app 命令依据输出文本而非退出码（adb uninstall 失败时仍退出 0 并打印 "Failure"）。
+pub async fn exec_adb_capture(adb: &Path, args: &[&str], timeout_ms: u64) -> Result<Captured, AdbError> {
+    let mut cmd = Command::new(adb);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = match timeout(Duration::from_millis(timeout_ms), cmd.output()).await {
+        Err(_) => return Err(classify_adb_error("timed out", args)),
+        Ok(Err(e)) => return Err(classify_adb_error(&e.to_string(), args)),
+        Ok(Ok(o)) => o,
+    };
+
+    Ok(Captured {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
 /// 执行一次 adb 命令；非零退出或底层错误归类为 AdbError（对齐原 execAdb 在非零时抛错的语义）。
 pub async fn exec_adb(adb: &Path, args: &[&str], timeout_ms: u64) -> Result<AdbOutput, AdbError> {
     let mut cmd = Command::new(adb);

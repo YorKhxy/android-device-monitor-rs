@@ -27,8 +27,12 @@ pub fn run() {
             // 日志
             commands::start_logcat,
             commands::stop_logcat,
-            // 性能/采集
-            commands::get_performance,
+            // 性能/运行情况（T2.3 真实现）
+            commands::performance::get_performance,
+            commands::performance::get_processes,
+            commands::performance::get_running_packages,
+            commands::performance::get_activity_stack,
+            // 采集
             commands::start_capture_session,
             commands::stop_capture_session,
             commands::get_active_capture_sessions,
@@ -42,10 +46,6 @@ pub fn run() {
             commands::select_import_files,
             commands::import_capture_sessions,
             commands::export_performance_session,
-            // 运行情况
-            commands::get_processes,
-            commands::get_running_packages,
-            commands::get_activity_stack,
             // 投屏
             commands::start_mirror,
             commands::stop_mirror,
@@ -55,13 +55,14 @@ pub fn run() {
             commands::get_update_status,
             commands::download_update,
             commands::quit_and_install_update,
-            // 应用安装/管理
+            // 应用安装（T2.2 待实现）
             commands::select_apk_files,
             commands::install_apk,
-            commands::uninstall_app,
-            commands::list_installed_packages,
-            commands::launch_app,
-            commands::force_stop_app,
+            // 应用管理（T2.1 真实现）
+            commands::apps::list_installed_packages,
+            commands::apps::launch_app,
+            commands::apps::force_stop_app,
+            commands::apps::uninstall_app,
             // 弱网
             commands::install_weaknet_helper,
             commands::start_weaknet,
