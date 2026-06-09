@@ -178,6 +178,67 @@ pub async fn signal_screenrecord_stop(adb: &Path, device_id: &str) {
     sleep(Duration::from_millis(400)).await;
 }
 
+/// spawn 一段 PC 端 scrcpy `--record` 录制（含音路径，T2.10）。与 screenrecord 路径关键区别：
+/// scrcpy 直接把 MP4 录到本地 `record_path`（无需设备端临时文件 + pull）；scrcpy 经 ADB 环境变量
+/// 复用 bundled adb，避免与 platform-tools 的 adb server 版本互踢。stderr 后台收集供探测/失败文案。
+pub async fn spawn_scrcpy_segment(
+    scrcpy: &Path,
+    adb: &Path,
+    device_id: &str,
+    record_path: &Path,
+    bit_rate_mbps: u32,
+) -> Result<SpawnedSegment, AdbError> {
+    let record_str = record_path.to_string_lossy();
+    let args = super::scrcpy::build_record_args(device_id, &record_str, MAX_SEGMENT_SECONDS, bit_rate_mbps);
+    let mut cmd = Command::new(scrcpy);
+    cmd.args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env("ADB", adb);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut child = cmd.spawn().map_err(|e| {
+        AdbError::custom(
+            "CAPTURE_RECORD_FAILED",
+            format!("启动 scrcpy 录制失败：{e}"),
+            "确认内置 scrcpy 可用、设备已连接并授权。",
+            e.to_string(),
+        )
+    })?;
+
+    let stderr_buf = Arc::new(Mutex::new(String::new()));
+    if let Some(mut err) = child.stderr.take() {
+        let buf = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s).await;
+            if let Ok(mut g) = buf.lock() {
+                g.push_str(&s);
+            }
+        });
+    }
+
+    Ok(SpawnedSegment {
+        child,
+        stderr: stderr_buf,
+    })
+}
+
+/// 优雅停 scrcpy 录制（T2.10 方案 A）：杀设备端 scrcpy-server，让 PC 端 client 检测到流结束后
+/// 走正常退出路径 finalize MP4（写入 moov atom），规避 Windows 下强杀 client 致 mp4 损坏的问题。
+/// client 未在超时内自行退出时，由调用方强杀兜底（方案 B，最后一段可能损坏）。
+/// 注：设备端 server 以 `com.genymobile.scrcpy.Server` 命令行运行，按命令行匹配杀，避免误伤。
+pub async fn signal_scrcpy_stop(adb: &Path, device_id: &str) {
+    let _ = exec_adb(adb, &["-s", device_id, "shell", "pkill", "-f", "com.genymobile.scrcpy"], 8000).await;
+    sleep(Duration::from_millis(300)).await;
+}
+
 /// pull 一段已录完的视频到本地，删设备端临时文件；空段清掉不上报；有效段上报分段 + 累计体积。
 #[allow(clippy::too_many_arguments)]
 pub async fn pull_segment(

@@ -117,6 +117,27 @@ pub fn build_audio_args(device_id: &str, api_level: Option<u32>) -> (Vec<String>
     }
 }
 
+/// 构建 scrcpy 录制（含音）单段参数（T2.10）：PC 端 `--record` 直接录到本地文件（视频+音频同一 MP4），
+/// `--no-window --no-control` 纯录制不显示/不操控；`--audio-dup` 设备与电脑同时出声（仅 A13+ 走此路径）；
+/// `--time-limit` 到点自动 finalize（中间段正常收尾，规避 Windows 强杀损坏 mp4 的问题）。
+pub fn build_record_args(
+    device_id: &str,
+    record_path: &str,
+    time_limit_secs: u32,
+    bit_rate_mbps: u32,
+) -> Vec<String> {
+    vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "--no-window".to_string(),
+        "--no-control".to_string(),
+        format!("--video-bit-rate={bit_rate_mbps}M"),
+        "--audio-dup".to_string(),
+        format!("--time-limit={time_limit_secs}"),
+        format!("--record={record_path}"),
+    ]
+}
+
 /// 解析 `adb shell wm size` 输出的屏幕分辨率，返回 (宽, 高)。
 /// 优先 `Override size`（实际生效），否则 `Physical size`。形如 "Physical size: 3840x1920"。
 pub fn parse_screen_size(wm_output: &str) -> Option<(u32, u32)> {
@@ -184,6 +205,19 @@ mod tests {
         let args = build_video_args("d", &options, Some(""));
         assert!(!args.iter().any(|a| a.starts_with("--video-bit-rate")));
         assert!(!args.iter().any(|a| a.starts_with("--crop")));
+    }
+
+    #[test]
+    fn record_args_has_record_audio_dup_and_time_limit() {
+        let args = build_record_args("dev1", "G:/caps/seg-0.mp4", 180, 8);
+        assert_eq!(args[0], "-s");
+        assert_eq!(args[1], "dev1");
+        assert!(args.contains(&"--record=G:/caps/seg-0.mp4".to_string()));
+        assert!(args.contains(&"--audio-dup".to_string()));
+        assert!(args.contains(&"--time-limit=180".to_string()));
+        assert!(args.contains(&"--video-bit-rate=8M".to_string()));
+        assert!(args.contains(&"--no-window".to_string()));
+        assert!(args.contains(&"--no-control".to_string()));
     }
 
     #[test]
