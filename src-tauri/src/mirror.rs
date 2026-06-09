@@ -22,6 +22,7 @@ use tokio::time::{sleep, timeout};
 
 use crate::adb::binary;
 use crate::adb::error::AdbError;
+use crate::adb::manager::exec_adb;
 use crate::adb::scrcpy::{self, MirrorStartOptions};
 
 /// scrcpy 启动后判定「是否瞬间失败」的探测窗口（设备离线/参数错会在此窗口内退出）。
@@ -149,6 +150,13 @@ fn describe_mirror_failure(stderr: &str) -> String {
     }
 }
 
+/// 查 Pico 设备屏幕分辨率并算出单眼裁切参数；任一步失败返回 None（降级为不裁切）。
+async fn resolve_pico_crop(adb: &std::path::Path, device_id: &str) -> Option<String> {
+    let out = exec_adb(adb, &["-s", device_id, "shell", "wm", "size"], 8000).await.ok()?;
+    let (w, h) = scrcpy::parse_screen_size(&out.stdout)?;
+    scrcpy::single_eye_crop(w, h)
+}
+
 /// 进程退出后收尾：仅当注册表仍是本代会话时移除并广播 stopped（防快速重启竞态误广播）。
 fn finalize_stopped(app: &AppHandle, device_id: &str, generation: u64) {
     let should_emit = {
@@ -170,12 +178,11 @@ fn finalize_stopped(app: &AppHandle, device_id: &str, generation: u64) {
 }
 
 /// 开始投屏：spawn 视频主进程并探测存活，注册会话 + 启动退出监听。
-/// 已在投屏的设备先停掉旧会话再起新的。crop 由调用方（T3.4）计算后传入。
+/// 已在投屏的设备先停掉旧会话再起新的。Pico 设备自动查分辨率裁单眼（T3.4）。
 pub async fn start(
     app: &AppHandle,
     device_id: &str,
     options: MirrorStartOptions,
-    crop: Option<String>,
 ) -> Result<MirrorSession, AdbError> {
     let scrcpy_path = scrcpy::resolve_scrcpy_path(app).ok_or_else(|| {
         AdbError::custom(
@@ -186,6 +193,12 @@ pub async fn start(
         )
     })?;
     let adb_path = binary::resolve_adb_path(app);
+
+    // Pico 设备：查屏幕分辨率裁左眼（--crop 宽/2:高:0:0）。查不到则降级为不裁切（投全屏双眼）。
+    let crop = match (options.is_pico, adb_path.as_deref()) {
+        (Some(true), Some(adb)) => resolve_pico_crop(adb, device_id).await,
+        _ => None,
+    };
 
     // 已在投屏 → 先停旧会话（kill 旧进程并清注册表），再起新的。
     stop(app, device_id).await;

@@ -9,7 +9,7 @@ use crate::adb::scrcpy::MirrorStartOptions;
 use crate::mirror;
 
 /// 开始投屏：spawn scrcpy 视频窗口，返回会话状态（失败返回结构化错误）。
-/// crop（Pico 单眼裁切）T3.4 计算后传入，当前为 None。
+/// Pico 设备由 mirror::start 内部自动裁单眼（T3.4）。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn start_mirror(
     app: AppHandle,
@@ -17,7 +17,7 @@ pub async fn start_mirror(
     options: Option<MirrorStartOptions>,
 ) -> Value {
     let options = options.unwrap_or_default();
-    match mirror::start(&app, &device_id, options, None).await {
+    match mirror::start(&app, &device_id, options).await {
         Ok(session) => json!({ "success": true, "data": session }),
         Err(e) => e.to_result(),
     }

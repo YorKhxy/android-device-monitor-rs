@@ -97,6 +97,30 @@ pub fn build_video_args(
     args
 }
 
+/// 解析 `adb shell wm size` 输出的屏幕分辨率，返回 (宽, 高)。
+/// 优先 `Override size`（实际生效），否则 `Physical size`。形如 "Physical size: 3840x1920"。
+pub fn parse_screen_size(wm_output: &str) -> Option<(u32, u32)> {
+    fn parse_wh(s: &str) -> Option<(u32, u32)> {
+        let (w, h) = s.trim().split_once('x')?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    }
+    let pick = |key: &str| {
+        wm_output
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(key).and_then(parse_wh))
+    };
+    pick("Override size:").or_else(|| pick("Physical size:"))
+}
+
+/// Pico 双眼并排画面取左眼：--crop=宽/2:高:0:0（设备自然方向坐标）。
+/// 宽不足 2 时返回 None（无法裁出有效单眼）。
+pub fn single_eye_crop(width: u32, height: u32) -> Option<String> {
+    if width < 2 || height == 0 {
+        return None;
+    }
+    Some(format!("{}:{}:0:0", width / 2, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +164,26 @@ mod tests {
         let args = build_video_args("d", &options, Some(""));
         assert!(!args.iter().any(|a| a.starts_with("--video-bit-rate")));
         assert!(!args.iter().any(|a| a.starts_with("--crop")));
+    }
+
+    #[test]
+    fn parse_screen_size_prefers_override() {
+        let out = "Physical size: 3840x1920\nOverride size: 1920x1080\n";
+        assert_eq!(parse_screen_size(out), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn parse_screen_size_falls_back_to_physical() {
+        assert_eq!(parse_screen_size("Physical size: 3840x1920"), Some((3840, 1920)));
+        assert_eq!(parse_screen_size("garbage"), None);
+    }
+
+    #[test]
+    fn single_eye_crop_takes_left_half() {
+        assert_eq!(single_eye_crop(3840, 1920), Some("1920:1920:0:0".to_string()));
+        // 奇数宽走整数除，丢弃中缝 1px。
+        assert_eq!(single_eye_crop(3841, 1920), Some("1920:1920:0:0".to_string()));
+        assert_eq!(single_eye_crop(1, 1080), None);
+        assert_eq!(single_eye_crop(1920, 0), None);
     }
 }
