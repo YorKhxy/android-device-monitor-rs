@@ -79,13 +79,13 @@ pub fn run() {
             commands::query_weaknet_traffic,
             commands::export_weaknet_traffic,
             commands::query_weaknet_shaper_stats,
-            // 文件管理/传输
-            commands::list_device_files,
+            // 文件管理/传输（list/delete/create/select_upload T4-1 真实现）
+            commands::files::list_device_files,
+            commands::files::delete_device_file,
+            commands::files::create_device_folder,
+            commands::files::select_upload_files,
             commands::pull_device_file,
             commands::pull_device_files,
-            commands::delete_device_file,
-            commands::create_device_folder,
-            commands::select_upload_files,
             commands::push_device_file,
             commands::resume_transfers,
             commands::discard_transfers,

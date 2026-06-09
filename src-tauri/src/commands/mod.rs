@@ -10,6 +10,7 @@
 
 pub mod apps;
 pub mod capture_io;
+pub mod files;
 pub mod mirror;
 pub mod performance;
 
@@ -55,13 +56,9 @@ fn stub() -> Value {
 #[tauri::command] pub fn export_weaknet_traffic() -> Value { stub() }
 #[tauri::command] pub fn query_weaknet_shaper_stats() -> Value { json!({ "success": true, "data": null }) }
 
-// ——— 文件管理/传输 ———
-#[tauri::command] pub fn list_device_files() -> Value { stub() }
+// ——— 文件管理/传输 ——（list/delete/create/select_upload 已由 commands::files 接管，T4-1）—
 #[tauri::command] pub fn pull_device_file() -> Value { stub() }
 #[tauri::command] pub fn pull_device_files() -> Value { stub() }
-#[tauri::command] pub fn delete_device_file() -> Value { stub() }
-#[tauri::command] pub fn create_device_folder() -> Value { stub() }
-#[tauri::command] pub fn select_upload_files() -> Value { ok_list() }
 #[tauri::command] pub fn push_device_file() -> Value { stub() }
 #[tauri::command] pub fn resume_transfers() -> Value { stub() }
 #[tauri::command] pub fn discard_transfers() -> Value { stub() }
