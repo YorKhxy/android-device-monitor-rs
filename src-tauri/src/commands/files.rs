@@ -56,6 +56,16 @@ fn normalize_dir(dir_path: &str) -> String {
     }
 }
 
+/// `ls` 列目录的目标参数：给目录补尾斜杠，强制解引用「指向目录的软链接」。
+/// 否则 `ls -al /sdcard`（/sdcard 是指向 /storage/self/primary 的软链接）只列出软链接本身、不进去列内容。
+fn list_target(dir: &str) -> String {
+    if dir.ends_with('/') {
+        dir.to_string()
+    } else {
+        format!("{dir}/")
+    }
+}
+
 fn parse_ls_line(line: &str, dir: &str) -> Option<DeviceFileEntry> {
     let line = line.trim_end();
     if line.is_empty() || line.starts_with("total ") {
@@ -115,8 +125,8 @@ pub async fn list_device_files(app: AppHandle, device_id: String, dir_path: Stri
         Some(p) => p,
     };
     let dir = normalize_dir(&dir_path);
-    // 过 adb shell 的路径需单引号转义，含空格/元字符的目录名才不被设备 shell 词拆破裂。
-    let q_dir = shell_quote(&dir);
+    // 列内容用带尾斜杠的目标（解引用软链接目录，如 /sdcard）；过 adb shell 的路径需单引号转义防词拆。
+    let q_dir = shell_quote(&list_target(&dir));
     match exec_adb_capture(&adb, &["-s", &device_id, "shell", "ls", "-al", &q_dir], 15_000).await {
         Ok(out) if out.success => {
             let entries: Vec<DeviceFileEntry> =
@@ -229,5 +239,13 @@ mod tests {
         assert_eq!(normalize_dir("/"), "/");
         assert_eq!(normalize_dir("/sdcard/"), "/sdcard");
         assert_eq!(normalize_dir("  /sdcard/DCIM  "), "/sdcard/DCIM");
+    }
+
+    #[test]
+    fn list_target_appends_trailing_slash_to_deref_symlink() {
+        // 软链接目录(/sdcard)需补尾斜杠才列内容；根已带斜杠不重复加。
+        assert_eq!(list_target("/sdcard"), "/sdcard/");
+        assert_eq!(list_target("/sdcard/DCIM"), "/sdcard/DCIM/");
+        assert_eq!(list_target("/"), "/");
     }
 }
