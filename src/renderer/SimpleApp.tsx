@@ -2245,7 +2245,8 @@ function SimpleApp() {
               </span>
               <input type="checkbox" checked={installAllowDowngrade} disabled={isUnifiedInstalling} onChange={(e) => setInstallAllowDowngrade(e.target.checked)} style={{ display: 'none' }} />允许降级覆盖
             </label>
-            <button className="btn primary" onClick={startUnifiedInstall} disabled={!canStart} style={{ flexShrink: 0, gap: '6px' }}>
+            {/* minWidth + 居中 + 等宽数字：勾选设备数字变(0→1→2)或切「安装中…」时按钮宽度恒定，避免标题行左右抖动。 */}
+            <button className="btn primary" onClick={startUnifiedInstall} disabled={!canStart} style={{ flexShrink: 0, gap: '6px', minWidth: '150px', justifyContent: 'center', fontVariantNumeric: 'tabular-nums' }}>
               <Icon name="download" size={16} />
               {isUnifiedInstalling ? '安装中…' : `安装到 ${selectedOnlineCount} 台设备`}
             </button>
