@@ -94,10 +94,18 @@ function envWithCargo(extra) {
   return env;
 }
 
-function run(cmd, args, env) {
-  console.log(`\n▶ ${cmd} ${args.join(' ')}`);
-  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: true, cwd: ROOT, env });
-  if (r.status !== 0) fail(`命令失败（exit ${r.status}）：${cmd} ${args.join(' ')}`);
+// 跑 shell 命令（单字符串，无 args 数组——避免 DEP0190；npm/cmd 解析需 shell）。仅用于无动态参数的固定命令。
+function sh(commandString, env) {
+  console.log(`\n▶ ${commandString}`);
+  const r = spawnSync(commandString, { stdio: 'inherit', shell: true, cwd: ROOT, env });
+  if (r.status !== 0) fail(`命令失败（exit ${r.status}）：${commandString}`);
+}
+
+// 跑本仓库的 node 脚本：用当前 node 绝对路径 + shell:false + 数组参数（不依赖 npm/PATH，正确处理含空格的 --notes）。
+function runNode(args, env) {
+  console.log(`\n▶ node ${args.join(' ')}`);
+  const r = spawnSync(process.execPath, args, { stdio: 'inherit', shell: false, cwd: ROOT, env });
+  if (r.status !== 0) fail(`命令失败（exit ${r.status}）：node ${args.join(' ')}`);
 }
 
 function main() {
@@ -116,18 +124,18 @@ function main() {
   // 自动从 git 提交生成本次更新说明 → release-notes.md（make-update-package 会读它写进 latest.json）。
   // 指定 --notes 或 --no-auto-notes 时跳过；--notes 在 make-update-package 里优先级更高。
   if (!process.argv.includes('--no-auto-notes') && !process.argv.some((a) => a.startsWith('--notes='))) {
-    run('node', ['scripts/gen-release-notes.mjs'], process.env);
+    runNode(['scripts/gen-release-notes.mjs'], process.env);
   }
 
   const buildEnv = envWithCargo({
     TAURI_SIGNING_PRIVATE_KEY: key,
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password,
   });
-  run('npm', ['run', 'tauri', 'build'], buildEnv);
+  sh('npm run tauri build', buildEnv);
 
   // 整理产物到 update-releases/（透传 --notes / --base）。
   const passThrough = process.argv.filter((a) => a.startsWith('--notes=') || a.startsWith('--base='));
-  run('node', ['scripts/make-update-package.mjs', ...passThrough], process.env);
+  runNode(['scripts/make-update-package.mjs', ...passThrough], process.env);
 
   // 发版锚点（对齐老工具）：提交版本号变更并打 tag v<版本>，作为下次自动 release notes 的起点。
   // 仅在确有版本号变更时提交；打包已成功，打 tag 出岔子不致命，吞掉即可。

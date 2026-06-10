@@ -60,10 +60,11 @@ function envWithCargo() {
   return env;
 }
 
-function run(cmd, args, opts = {}) {
-  console.log(`\n▶ ${cmd} ${args.join(' ')}`);
-  const r = spawnSync(cmd, args, { stdio: 'inherit', shell: true, cwd: ROOT, ...opts });
-  if (r.status !== 0) fail(`命令失败（exit ${r.status}）：${cmd} ${args.join(' ')}`);
+// 跑 shell 命令（单字符串，无 args 数组——避免 DEP0190；npm/cmd 解析需 shell）。仅用于无动态参数的固定命令。
+function sh(commandString, opts = {}) {
+  console.log(`\n▶ ${commandString}`);
+  const r = spawnSync(commandString, { stdio: 'inherit', shell: true, cwd: ROOT, ...opts });
+  if (r.status !== 0) fail(`命令失败（exit ${r.status}）：${commandString}`);
 }
 
 // 手写递归复制（fs.cpSync 在部分 Node/Windows 下对中文目标路径会静默失败）。
@@ -85,7 +86,7 @@ function main() {
 
   if (!skipBuild) {
     // tauri build 内部会先跑 beforeBuildCommand(npm run build) 再生产编译 exe；--no-bundle 跳过 NSIS 打包。
-    run('npm', ['run', 'tauri', 'build', '--', '--no-bundle'], { env: envWithCargo() });
+    sh('npm run tauri build -- --no-bundle', { env: envWithCargo() });
   }
   if (!fs.existsSync(EXE)) fail(`未找到 release exe：${EXE}\n请去掉 --skip-build 重新构建。`);
   for (const d of ['platform-tools', 'scrcpy']) {
