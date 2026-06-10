@@ -79,33 +79,67 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// 采样目标包当前上屏 surface 的合成帧率。无包名 / 任一步失败 / 无有效帧 → None（best-effort）。
+/// 从 `--list` 里挑能反映真机 layer 命名的样例（含 "Surface" 或包名的前几行），供选层失败时诊断展示。
+fn sample_candidates(list_output: &str, package: &str) -> String {
+    let picked: Vec<&str> = list_output
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && (l.contains("Surface") || l.contains(package)))
+        .take(4)
+        .collect();
+    if picked.is_empty() {
+        "（--list 无含 Surface/包名 的行）".to_string()
+    } else {
+        picked.join(" ｜ ")
+    }
+}
+
+/// 采样目标包当前上屏 surface 的合成帧率。
+///
+/// 诊断口径：只要有前台包名就**总返回 Some**——成功带真实 fps + layer，失败带 fps 0 + 原因（含候选 layer 样例），
+/// 让前端那行永远可见，便于真机定位（区分「选层失败 / --latency 失效 / 无帧」）。无包名才 None（如 Pico/无前台）。
 pub async fn sample_surface_fps(adb: &Path, device_id: &str, package: Option<&str>) -> Option<SurfaceFps> {
     let pkg = package?;
 
-    let list = exec_adb(
+    let list = match exec_adb(
         adb,
         &["-s", device_id, "shell", "dumpsys", "SurfaceFlinger", "--list"],
         4000,
     )
     .await
-    .ok()?;
-    let layer = pick_layer(&list.stdout, pkg)?;
+    {
+        Ok(o) => o,
+        Err(_) => return Some(SurfaceFps { fps: 0.0, layer: "诊断：SurfaceFlinger --list 失败".to_string() }),
+    };
+
+    let layer = match pick_layer(&list.stdout, pkg) {
+        Some(l) => l,
+        None => {
+            return Some(SurfaceFps {
+                fps: 0.0,
+                layer: format!("诊断：未匹配到含包名的 layer；候选 [{}]", sample_candidates(&list.stdout, pkg)),
+            })
+        }
+    };
 
     let quoted = shell_quote(&layer);
-    let latency = exec_adb(
+    let latency = match exec_adb(
         adb,
         &["-s", device_id, "shell", "dumpsys", "SurfaceFlinger", "--latency", &quoted],
         4000,
     )
     .await
-    .ok()?;
+    {
+        Ok(o) => o,
+        Err(_) => return Some(SurfaceFps { fps: 0.0, layer: format!("诊断：{layer} 的 --latency 失败") }),
+    };
 
     let fps = parse_surface_latency_fps(&latency.stdout);
     if fps > 0.0 {
         Some(SurfaceFps { fps, layer })
     } else {
-        None
+        // 选到 layer 但算不出帧：Android 12+ BLAST 层 --latency 常返回空/无效，是已知失效面。
+        Some(SurfaceFps { fps: 0.0, layer: format!("诊断：{layer} 无有效帧（疑 BLAST/Android13 --latency 失效）") })
     }
 }
 
