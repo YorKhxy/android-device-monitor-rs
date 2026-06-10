@@ -118,6 +118,10 @@ pub fn run() {
                     adb::pico_metrics_stream::stop_all().await;
                     adb::logcat_stream::stop_all().await;
                     mirror::stop_all().await;
+                    // 关掉对照探针在设备上启用的 SurfaceFlinger timestats。
+                    if let Some(adb) = adb::binary::resolve_adb_path(&app) {
+                        adb::surface_fps::disable_all(&adb).await;
+                    }
                 });
             }
         });

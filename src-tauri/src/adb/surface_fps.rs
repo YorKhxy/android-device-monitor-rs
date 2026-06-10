@@ -1,14 +1,16 @@
 //! SurfaceFlinger 合成帧率采样（对照探针）。
 //!
-//! 背景：`dumpsys gfxinfo <pkg> framestats` 只统计 Android **HWUI 视图树**的渲染帧，
-//! 内嵌 Unity / 游戏 / 视频画在自己的 **SurfaceView + GL/Vulkan** 上，绕过 HWUI——gfxinfo 看不到。
-//! SurfaceFlinger 在**合成器层**按 layer 量真实上屏帧时间戳，谁在出画量谁，能抓到 Unity 的 surface。
+//! 背景：`dumpsys gfxinfo <pkg> framestats` 只统计 Android **HWUI 视图树**渲染帧，内嵌 Unity / 游戏 / 视频
+//! 画在自己的 **SurfaceView + GL/Vulkan** 上，绕过 HWUI——gfxinfo 看不到（实测 Unity 启动后 gfxinfo 掉到 ~2fps）。
 //!
-//! 用法：`--list` 列 layer → 选目标 App 的 layer（优先 SurfaceView=Unity/游戏面）→ `--latency <layer>`
-//! 拿帧时间戳算 fps。best-effort：任一步失败 / 无有效帧 → None，绝不影响主采样。
-//! 当前作为「与 gfxinfo 并排对照」的探针，采集曲线口径暂不改。
+//! 取数口径：`dumpsys SurfaceFlinger --timestats`（Android 12+ BLAST 兼容；旧的 `--latency` 对 BLAST 层失效）。
+//! 它按 layer 直接给 `averageFPS`，含 `SurfaceView[...]@N(BLAST)` 这类 Unity 的合成层。
+//! 流程：首拍 `-enable -clear` 启用；其后每拍 `-dump` 读目标 SurfaceView 层 averageFPS → `-clear` 重置窗口
+//! （每拍得 ~1 个采样间隔的窗口均值）。best-effort：只要有前台包名就总返回 Some（成功带真实 fps，失败带 0 + 诊断）。
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use super::manager::exec_adb;
 
@@ -19,127 +21,113 @@ pub struct SurfaceFps {
     pub layer: String,
 }
 
-/// `--latency` 输出中表示「该帧尚未呈现」的哨兵值（i64::MAX），需跳过。
-const PENDING_TS: i64 = i64::MAX;
-
-/// 从 `dumpsys SurfaceFlinger --list` 输出中挑目标 layer：
-/// 取含包名的行，优先含 `SurfaceView`（Unity/游戏/视频的独立 surface），否则取首个含包名的（App 主 surface）。
-pub fn pick_layer(list_output: &str, package: &str) -> Option<String> {
-    let candidates: Vec<&str> = list_output
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && l.contains(package))
-        .collect();
-    candidates
-        .iter()
-        .find(|l| l.contains("SurfaceView"))
-        .or_else(|| candidates.first())
-        .map(|s| s.to_string())
+/// 已启用 timestats 的设备集合（首拍 enable+clear 后登记，避免每拍重复 enable）。
+fn primed() -> &'static Mutex<HashSet<String>> {
+    static P: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// 解析 `dumpsys SurfaceFlinger --latency <layer>` 输出算 fps。
-/// 格式：首行 = 刷新周期(ns)；其后每行 3 个时间戳（desiredPresent / actualPresent / frameReady）。
-/// 按 actualPresent（第 2 列）相邻帧间隔算帧率；跳过 0 与 pending(i64::MAX) 帧；取最近 60 帧。
-pub fn parse_surface_latency_fps(output: &str) -> f64 {
-    let mut actual: Vec<i64> = Vec::new();
-    for line in output.lines().skip(1) {
-        let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 3 {
+fn is_primed(device_id: &str) -> bool {
+    primed().lock().map(|s| s.contains(device_id)).unwrap_or(false)
+}
+
+fn mark_primed(device_id: &str) {
+    if let Ok(mut s) = primed().lock() {
+        s.insert(device_id.to_string());
+    }
+}
+
+/// 从 `--timestats -dump` 输出解析目标包 SurfaceView 层的 averageFPS。
+///
+/// 输出按 `layerName = <名字>` 分段，每段含 `averageFPS = <值>`。优先选「含包名 + 含 SurfaceView + 非
+/// `Background for`（那是占位背景层、不出帧）」的层（= Unity 的合成面）；没有则回退含包名的活动层。
+/// 返回 (fps, layerName)。
+pub fn parse_timestats_fps(output: &str, package: &str) -> Option<(f64, String)> {
+    // 收集 (layerName, averageFPS)。
+    let mut layers: Vec<(String, f64)> = Vec::new();
+    for section in output.split("layerName = ").skip(1) {
+        let name = section.lines().next().unwrap_or("").trim().to_string();
+        if name.is_empty() {
             continue;
         }
-        if let Ok(ts) = cols[1].parse::<i64>() {
-            if ts > 0 && ts != PENDING_TS {
-                actual.push(ts);
+        if let Some(fps) = find_average_fps(section) {
+            layers.push((name, fps));
+        }
+    }
+
+    let belongs = |name: &str| name.contains(package);
+    let is_real_surface = |name: &str| name.contains("SurfaceView") && !name.contains("Background for");
+
+    // 优先：包名 + 真正的 SurfaceView 内容层（Unity）。
+    if let Some((name, fps)) = layers.iter().find(|(n, _)| belongs(n) && is_real_surface(n)) {
+        return Some((*fps, name.clone()));
+    }
+    // 回退：含包名的任意层（活动主窗口，等价 gfxinfo 口径）。
+    layers
+        .iter()
+        .find(|(n, _)| belongs(n))
+        .map(|(n, f)| (*f, n.clone()))
+}
+
+/// 从一段 timestats 文本里取 `averageFPS = <数>`。
+fn find_average_fps(section: &str) -> Option<f64> {
+    for line in section.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("averageFPS") {
+            // 形如 "averageFPS = 71.95"
+            let v = rest.trim_start_matches([' ', '=', '\t']);
+            if let Ok(f) = v.trim().parse::<f64>() {
+                return Some(f);
             }
         }
     }
-    if actual.len() < 2 {
-        return 0.0;
+    None
+}
+
+async fn timestats(adb: &Path, device_id: &str, flags: &[&str]) -> Option<String> {
+    let mut args = vec!["-s", device_id, "shell", "dumpsys", "SurfaceFlinger", "--timestats"];
+    args.extend_from_slice(flags);
+    exec_adb(adb, &args, 5000).await.ok().map(|o| o.stdout)
+}
+
+/// 关闭所有已启用 timestats 的设备（应用退出清理，避免把 timestats 长期开在设备上徒增开销）。
+pub async fn disable_all(adb: &Path) {
+    let ids: Vec<String> = primed().lock().map(|s| s.iter().cloned().collect()).unwrap_or_default();
+    for id in &ids {
+        let _ = timestats(adb, id, &["-disable"]).await;
     }
-    let recent = if actual.len() > 60 {
-        &actual[actual.len() - 60..]
-    } else {
-        &actual[..]
-    };
-    let span_ns = recent[recent.len() - 1] - recent[0];
-    if span_ns <= 0 {
-        return 0.0;
-    }
-    // n 个时间戳 = n-1 个帧间隔。
-    let fps = (recent.len() - 1) as f64 / (span_ns as f64 / 1_000_000_000.0);
-    if fps.is_finite() && fps > 0.0 {
-        (fps * 10.0).round() / 10.0
-    } else {
-        0.0
+    if let Ok(mut s) = primed().lock() {
+        s.clear();
     }
 }
 
-/// layer 名含 `[]#()` 等，作 `adb shell` 参数时单引号包裹避免设备 shell 二次解析破裂。
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-/// 从 `--list` 里挑能反映真机 layer 命名的样例（含 "Surface" 或包名的前几行），供选层失败时诊断展示。
-fn sample_candidates(list_output: &str, package: &str) -> String {
-    let picked: Vec<&str> = list_output
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && (l.contains("Surface") || l.contains(package)))
-        .take(4)
-        .collect();
-    if picked.is_empty() {
-        "（--list 无含 Surface/包名 的行）".to_string()
-    } else {
-        picked.join(" ｜ ")
-    }
-}
-
-/// 采样目标包当前上屏 surface 的合成帧率。
+/// 采样目标包当前上屏 surface 的合成帧率（timestats 口径）。
 ///
-/// 诊断口径：只要有前台包名就**总返回 Some**——成功带真实 fps + layer，失败带 fps 0 + 原因（含候选 layer 样例），
-/// 让前端那行永远可见，便于真机定位（区分「选层失败 / --latency 失效 / 无帧」）。无包名才 None（如 Pico/无前台）。
+/// 诊断口径：只要有前台包名就**总返回 Some**——成功带真实 fps + layer，失败带 fps 0 + 原因，
+/// 让前端对照行永远可见、便于真机定位。无包名才 None（如 Pico / 无前台）。
 pub async fn sample_surface_fps(adb: &Path, device_id: &str, package: Option<&str>) -> Option<SurfaceFps> {
     let pkg = package?;
 
-    let list = match exec_adb(
-        adb,
-        &["-s", device_id, "shell", "dumpsys", "SurfaceFlinger", "--list"],
-        4000,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(_) => return Some(SurfaceFps { fps: 0.0, layer: "诊断：SurfaceFlinger --list 失败".to_string() }),
-    };
+    // 首拍：启用并清零，下拍起才有窗口数据。
+    if !is_primed(device_id) {
+        let _ = timestats(adb, device_id, &["-enable", "-clear"]).await;
+        mark_primed(device_id);
+        return Some(SurfaceFps { fps: 0.0, layer: "诊断：timestats 已启用，下一拍起出数".to_string() });
+    }
 
-    let layer = match pick_layer(&list.stdout, pkg) {
-        Some(l) => l,
-        None => {
-            return Some(SurfaceFps {
-                fps: 0.0,
-                layer: format!("诊断：未匹配到含包名的 layer；候选 [{}]", sample_candidates(&list.stdout, pkg)),
-            })
-        }
+    let dump = match timestats(adb, device_id, &["-dump"]).await {
+        Some(s) => s,
+        None => return Some(SurfaceFps { fps: 0.0, layer: "诊断：timestats -dump 失败".to_string() }),
     };
+    // 读完即清零，使下一拍是新窗口（~1 个采样间隔的均值）。
+    let _ = timestats(adb, device_id, &["-clear"]).await;
 
-    let quoted = shell_quote(&layer);
-    let latency = match exec_adb(
-        adb,
-        &["-s", device_id, "shell", "dumpsys", "SurfaceFlinger", "--latency", &quoted],
-        4000,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(_) => return Some(SurfaceFps { fps: 0.0, layer: format!("诊断：{layer} 的 --latency 失败") }),
-    };
-
-    let fps = parse_surface_latency_fps(&latency.stdout);
-    if fps > 0.0 {
-        Some(SurfaceFps { fps, layer })
-    } else {
-        // 选到 layer 但算不出帧：Android 12+ BLAST 层 --latency 常返回空/无效，是已知失效面。
-        Some(SurfaceFps { fps: 0.0, layer: format!("诊断：{layer} 无有效帧（疑 BLAST/Android13 --latency 失效）") })
+    match parse_timestats_fps(&dump, pkg) {
+        Some((fps, layer)) => Some(SurfaceFps { fps: (fps * 10.0).round() / 10.0, layer }),
+        None => Some(SurfaceFps {
+            fps: 0.0,
+            layer: "诊断：timestats 无该包 layer（窗口内无帧 / 未匹配包名）".to_string(),
+        }),
     }
 }
 
@@ -147,64 +135,51 @@ pub async fn sample_surface_fps(adb: &Path, device_id: &str, package: Option<&st
 mod tests {
     use super::*;
 
+    // 仿 AOSP TimeStats -dump 片段：全局 + 两个 layer（Unity 的 SurfaceView 与活动主窗口）。
+    const SAMPLE: &str = "\
+SurfaceFlinger TimeStats:
+averageFPS = 60.000
+**** LayerStats ****
+layerName = Background for SurfaceView[com.myverse.meta.myverse/com.myverse.meta.myverse.MainActivity]#817
+totalFrames = 0
+averageFPS = 0.000
+layerName = SurfaceView[com.myverse.meta.myverse/com.myverse.meta.myverse.MainActivity]@0(BLAST)
+totalFrames = 144
+droppedFrames = 0
+averageFPS = 71.95
+layerName = com.myverse.meta.myverse/com.myverse.meta.myverse.MainActivity#0
+totalFrames = 3
+averageFPS = 2.10
+";
+
     #[test]
-    fn pick_layer_prefers_surfaceview() {
-        let list = "\
-com.demo.app/com.demo.app.MainActivity#0
-SurfaceView[com.demo.app/com.demo.app.MainActivity]#1(BLAST)
-Background for -task
-NavigationBar0#0";
-        // 含包名且含 SurfaceView 的优先（= 内嵌 Unity 的 surface）。
-        assert_eq!(
-            pick_layer(list, "com.demo.app").as_deref(),
-            Some("SurfaceView[com.demo.app/com.demo.app.MainActivity]#1(BLAST)")
-        );
+    fn picks_real_surfaceview_not_background_layer() {
+        let (fps, layer) = parse_timestats_fps(SAMPLE, "com.myverse.meta.myverse").unwrap();
+        assert!((fps - 71.95).abs() < 0.01, "fps={fps}");
+        assert!(layer.contains("SurfaceView") && layer.contains("(BLAST)"));
+        assert!(!layer.contains("Background for"), "不能选到背景占位层");
     }
 
     #[test]
-    fn pick_layer_falls_back_to_activity_layer() {
-        let list = "com.demo.app/com.demo.app.MainActivity#0\nNavigationBar0#0";
-        assert_eq!(
-            pick_layer(list, "com.demo.app").as_deref(),
-            Some("com.demo.app/com.demo.app.MainActivity#0")
-        );
-    }
-
-    #[test]
-    fn pick_layer_none_when_package_absent() {
-        let list = "SystemUI#0\nNavigationBar0#0";
-        assert_eq!(pick_layer(list, "com.demo.app"), None);
-    }
-
-    #[test]
-    fn parse_latency_computes_fps_from_actual_present() {
-        // 刷新周期 + 5 帧，actualPresent（第 2 列）间隔 ~16.6ms ≈ 60fps。
+    fn falls_back_to_activity_layer_when_no_surfaceview() {
         let out = "\
-16666666
-1000000000 1000000000 1000500000
-1000000000 1016666666 1017000000
-1000000000 1033333332 1033500000
-1000000000 1049999998 1050200000
-1000000000 1066666664 1067000000";
-        let fps = parse_surface_latency_fps(out);
-        // 5 帧 4 间隔，跨度 66.66ms → ~60fps。
-        assert!((fps - 60.0).abs() < 1.5, "fps={fps}");
+**** LayerStats ****
+layerName = com.demo.app/com.demo.app.MainActivity#0
+averageFPS = 59.5
+";
+        let (fps, layer) = parse_timestats_fps(out, "com.demo.app").unwrap();
+        assert!((fps - 59.5).abs() < 0.01);
+        assert!(layer.contains("MainActivity"));
     }
 
     #[test]
-    fn parse_latency_skips_pending_and_zero() {
-        let pending = i64::MAX;
-        let out = format!(
-            "16666666\n0 0 0\n1000000000 1000000000 1000500000\n1000000000 1016666666 1017000000\n1000000000 {pending} {pending}"
-        );
-        // 只有 2 个有效 actualPresent（间隔 16.66ms → 60fps），pending/0 跳过。
-        let fps = parse_surface_latency_fps(&out);
-        assert!((fps - 60.0).abs() < 2.0, "fps={fps}");
+    fn none_when_package_absent() {
+        assert!(parse_timestats_fps(SAMPLE, "com.other.app").is_none());
     }
 
     #[test]
-    fn parse_latency_empty_or_single_frame_is_zero() {
-        assert_eq!(parse_surface_latency_fps("16666666"), 0.0);
-        assert_eq!(parse_surface_latency_fps("16666666\n1000 1000 1000"), 0.0);
+    fn find_average_fps_parses_value() {
+        assert_eq!(find_average_fps("totalFrames = 10\naverageFPS = 89.9\n"), Some(89.9));
+        assert_eq!(find_average_fps("no fps here"), None);
     }
 }
