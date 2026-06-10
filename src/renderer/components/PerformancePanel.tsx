@@ -265,6 +265,14 @@ export function PerformancePanel({
               <div style={{ fontSize: '12px', color: 'var(--fg-tertiary)', marginBottom: '6px' }}>{blockIsPicoView ? '当前 Pico 指标关联前台应用' : '当前 FPS 口径'}</div>
               <div style={{ fontSize: '14px', color: 'var(--fg-secondary)', marginBottom: '4px' }}>{blockPerformance?.packageName || '--'}</div>
               <div style={{ fontSize: '12px', color: 'var(--fg-tertiary)', wordBreak: 'break-all' }}>{blockPerformance?.activityName || '未能解析前台 Activity'}</div>
+              {/* 对照探针：gfxinfo（HWUI 视图帧）vs SurfaceFlinger（合成上屏帧，能抓到内嵌 Unity/游戏的 SurfaceView）。
+                  采集曲线仍用 gfxinfo；此处仅供真机对比两个口径后决定是否采纳 SurfaceFlinger。 */}
+              {!blockIsPicoView && blockPerformance?.androidMetrics?.fpsSurfaceFlinger !== undefined && (
+                <div style={{ fontSize: '12px', color: 'var(--fg-tertiary)', marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed var(--border-subtle)' }}>
+                  <div style={{ marginBottom: '2px' }}>对照口径 · gfxinfo <span style={{ color: 'var(--fg-secondary)' }}>{blockPerformance.fps} fps</span> ｜ SurfaceFlinger <span style={{ color: 'var(--fg-secondary)' }}>{blockPerformance.androidMetrics.fpsSurfaceFlinger} fps</span></div>
+                  <div style={{ wordBreak: 'break-all' }}>layer: {blockPerformance.androidMetrics.fpsSurfaceFlingerLayer || '--'}</div>
+                </div>
+              )}
             </div>
           )}
           {renderMetricStrip(blockPerformance, blockIsPicoView, blockShowPicoFallback)}

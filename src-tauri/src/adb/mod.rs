@@ -18,3 +18,4 @@ pub mod runtime_inspector;
 pub mod runtime_parsers;
 pub mod runtime_types;
 pub mod scrcpy;
+pub mod surface_fps;

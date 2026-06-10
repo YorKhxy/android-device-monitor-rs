@@ -38,6 +38,12 @@ pub struct AndroidPerformancePayload {
     pub memory_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_source: Option<String>,
+    // —— 对照探针（与 gfxinfo 并排）：SurfaceFlinger 合成帧率 + 实测 layer ——
+    // 用于内嵌 Unity/游戏等 SurfaceView 场景下 gfxinfo 盲区的真机对比；None 时不序列化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps_surface_flinger: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps_surface_flinger_layer: Option<String>,
 }
 
 /// 性能指标（对齐 shared/types 的 PerformanceMetrics）。
@@ -116,13 +122,15 @@ pub async fn get_android_performance_metrics(
     let cpu_args = ["-s", device_id, "shell", "top", "-n", "1"];
 
     // 内存走 /proc/meminfo（瞬时、格式固定、永不超时）；CPU 走 top -n 1；FPS 走 gfxinfo framestats。
-    let (mem, cpu, gfx) = tokio::join!(
+    // 并排跑一条 SurfaceFlinger 合成帧率（对照探针，best-effort——失败返回 None，不参与整拍成败判定）。
+    let (mem, cpu, gfx, sf) = tokio::join!(
         exec_adb(adb, &mem_args, 4000),
         exec_adb(adb, &cpu_args, 5000),
         exec_adb(adb, &gfx_ref, 4000),
+        super::surface_fps::sample_surface_fps(adb, device_id, pkg.as_deref()),
     );
 
-    // 任一命令级失败（含超时）即整拍跳过——抛出而非填 0。
+    // 任一命令级失败（含超时）即整拍跳过——抛出而非填 0。SurfaceFlinger 探针不在此列。
     let mem = mem?;
     let cpu = cpu?;
     let gfx = gfx?;
@@ -144,6 +152,8 @@ pub async fn get_android_performance_metrics(
             cpu_source: Some("adb shell top -n 1".to_string()),
             memory_source: Some("adb shell cat /proc/meminfo".to_string()),
             fps_source: Some(fps_source),
+            fps_surface_flinger: sf.as_ref().map(|s| s.fps),
+            fps_surface_flinger_layer: sf.map(|s| s.layer),
         }),
         pico_metrics: None,
         pico_metrics_state: None,

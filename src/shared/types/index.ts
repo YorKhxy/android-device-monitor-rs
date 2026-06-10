@@ -172,6 +172,9 @@ export interface AndroidPerformancePayload {
   cpuSource?: string;
   memorySource?: string;
   fpsSource?: string;
+  // 对照探针：SurfaceFlinger 合成帧率 + 实测 layer（内嵌 Unity/游戏等 SurfaceView 场景下 gfxinfo 盲区的真机对比）
+  fpsSurfaceFlinger?: number;
+  fpsSurfaceFlingerLayer?: string;
 }
 
 export type PicoMetricsState = 'native' | 'fallback' | 'unavailable';
