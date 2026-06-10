@@ -43,9 +43,43 @@
   - **打包**：NSIS `installMode=both`（可选目录/不默认 C 盘）、`webviewInstallMode=embedBootstrapper`（兜老 Win10）。下载包 **17.5MB**、装后 **53.4MB**，静默安装冒烟过、实测 adb/scrcpy 资源齐全——远优于 ~45MB 目标（体积红利兑现）。
   - **热更**：`tauri-plugin-updater 2` + `updater/mod.rs`（check/download/install/status/notes，手动触发、静默装、进度事件）；minisign 签名（**私钥 `src-tauri/.tauri-keys/adm-updater.key` 已 gitignore，密码 `admUpd2026`；私钥+密码是签名机密，丢了就没法签更新**）；`createUpdaterArtifacts` 产 `setup.exe`+`.sig`。
   - **服务端**：`scripts/serve-updates.mjs`（latest.json+包分发、Range、限流、访问日志、路径穿越防护）+ `scripts/make-update-package.mjs`（签名清单生成）；`npm run serve:updates` / `npm run make:update`。
-  - 📌 待验：热更端到端真机（装 0.1.0 → 抬版本打 0.2.0 → 起 serve:updates → 点检查更新 → 签名校验/静默装/更新日志）。endpoint 现为 `127.0.0.1:8788` 占位，部署改内网。P5 助手 APK 待补。
+  - 📌 待验：热更端到端真机（装旧版 → `打热更包.bat` 抬版本 → `启动热更服务器.bat` → 点检查更新 → 签名校验/静默装/更新日志）。endpoint `127.0.0.1:8384/latest.json`（部署改内网）。P5 助手 APK 待补。
 - ⬜ **P7**：真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
   - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
+
+## 🔧 本会话进展 + 踩坑记录（交接给新会话）
+
+P4/P6 完成后，做了一串**真机验收修复 + 运维脚本对齐老工具 + 环境治理**，全部已推 origin/dev（最新 commit 见 `git log`，当前版本已自增到 **0.1.1**，因测试 `打热更包`）。
+
+**真机验收修复**：
+- 文件浏览进软链接目录（/sdcard→/storage/self/primary）列空 → `ls -al` 加尾斜杠解引用（`commands/files.rs` list_target）
+- 设备卡 息屏/唤醒/解锁/重启 + 打开所在文件夹 全是桩 → 实现（`commands/device.rs`，对齐老工具 keyevent/swipe/reboot）
+- 设备卡 WiFi 延迟 + 屏幕状态搬漏 → `get_devices` 补 `latencyMs/latencyStatus/screenState`（get-state RTT + dumpsys power），并入 `devices_snapshot` 触发刷新
+- 应用安装「安装到 X 台设备」按钮勾选抖动 → tabular-nums + minWidth；刷新按钮加 useCooldown 转圈
+- **FPS 口径**：gfxinfo 看不到内嵌 Unity 的 SurfaceView（实测仅 0.2fps）→ 改 SurfaceFlinger `--timestats`（`adb/surface_fps.rs`），主 fps SurfaceFlinger 优先、gfxinfo 回退。坑：`--latency` 对 Android12+ BLAST 层失效，必须用 timestats；选层要排除「Background for」占位层。落档 Spec v2.3。
+
+**运维脚本（对齐老工具 `G:\Androidtool\android-device-monitor` 的产物规则）**：
+- 绿色包 `打绿色包.bat`→`scripts/build-portable.mjs`：出 `src/release/<yyyy-MM>/AndroidDeviceMonitor_<MMdd>_<HHmmss>/`（exe 同名、平铺资源、无 zip）
+- 热更包 `打热更包.bat`→`build-update.mjs`：版本自增 + `gen-release-notes.mjs`(git 提交生成说明) + 签名 build + `update-releases/v<版本>_<时间>/`+`latest/` + 打 tag
+- 热更服务器 `启动/关闭热更服务器.bat`→`serve-updates.mjs`：端口 8384、服务 `update-releases/latest`、分桶限流/并发/__report/Range（移植老 serve-updates.js）
+- 签名密钥 `src-tauri/.tauri-keys/`（gitignore）：私钥 + `password.txt`(密码 `admUpd2026`)；**丢了就签不了更新**
+
+**踩过的坑（新会话避雷）**：
+1. **release 启动 panic**：updater 端点非 https → tauri.conf updater 加 `dangerousInsecureTransportProtocol:true`（内网 http 用）
+2. **绿色包白屏「localhost 拒绝连接」**：`cargo build --release` 出的是 dev 前端(指向 devUrl)；生产包必须 `tauri build --no-bundle`（CLI 才切嵌入式前端）
+3. **打包脚本 npm 找不到**：`{...process.env}` 后 `env.PATH`(大写) 在 Windows=undefined(真实键是 `Path`)，覆盖 PATH 丢了 node/npm → 找现有 path 键改原值
+4. **.bat 内容中文乱码当命令**：cmd 按系统 GBK 解析 .bat，UTF-8 中文 echo 被拆乱 → .bat 内容全改 ASCII，中文交 node 打印
+5. **fs.cpSync 到中文目标路径静默失败**（Node24/Win）→ 手写递归 copyFileSync
+6. **PowerShell `$env:X=""` 在 Windows 删除变量**（空串=未设）→ 签名密码必须非空
+7. **DEP0190**：spawnSync(cmd, args[], {shell:true}) → 单字符串 shell / node 用 `process.execPath` 数组无 shell
+8. **验证教训（已记 feedback）**：打包验证只查文件齐全 ≠ 能跑；dev 能跑 ≠ release 能跑；必须真正启动 exe 确认主窗口（`packaging-verify-must-launch-exe-not-just-check-files.md`）
+9. WebView2 自定义协议须 `http://<scheme>.localhost`；media 协议 `adm-media.localhost`
+10. PS5.1 `$OutputEncoding=us-ascii` 中文管道变 `?` → 已装 PS7 + 设为 WT 默认（环境层面解决）
+
+**接续提示（新会话）**：
+- 分支 `dev`，先 `git pull`。当前版本 0.1.1（测试热更自增的，可保留或回退）。
+- 待办：① P4/P6/设备控制/FPS 的**真机功能验收**逐条划掉（见下方「待真机验收」段）；② 热更**端到端真机验证**；③ 回补 **P5 弱网**（需用户给助手 APK `pico-network-helper.apk` → `src-tauri/resources/`）；④ **P7 全功能回归**。
+- 打包验证铁律：改完打包/release 相关，**必须真启动 exe 看到主窗口**，不能只查文件。
 
 ## ⏳ 待真机验收（回头补，验完逐条划掉）
 
