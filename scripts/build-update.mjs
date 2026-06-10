@@ -108,6 +108,12 @@ function main() {
   writeVersion(version);
   console.log(`✓ 版本已写入 tauri.conf.json / package.json / Cargo.toml`);
 
+  // 自动从 git 提交生成本次更新说明 → release-notes.md（make-update-package 会读它写进 latest.json）。
+  // 指定 --notes 或 --no-auto-notes 时跳过；--notes 在 make-update-package 里优先级更高。
+  if (!process.argv.includes('--no-auto-notes') && !process.argv.some((a) => a.startsWith('--notes='))) {
+    run('node', ['scripts/gen-release-notes.mjs'], process.env);
+  }
+
   const buildEnv = envWithCargo({
     TAURI_SIGNING_PRIVATE_KEY: key,
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password,
