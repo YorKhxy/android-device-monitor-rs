@@ -48,8 +48,14 @@ function envWithCargo() {
     ? path.join(process.env.CARGO_HOME, 'bin')
     : path.join(os.homedir(), '.cargo', 'bin');
   const env = { ...process.env };
-  if (fs.existsSync(cargoBin) && !(env.PATH || '').toLowerCase().includes(cargoBin.toLowerCase())) {
-    env.PATH = cargoBin + path.delimiter + (env.PATH || '');
+  if (fs.existsSync(cargoBin)) {
+    // Windows 环境变量名是 'Path'，spread 成普通对象后大小写敏感——必须找现有 path 键改其原值，
+    // 否则 env.PATH(大写) 取到 undefined 会把整条 PATH 覆盖成只剩 cargoBin，丢了 node/npm。
+    const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') || 'PATH';
+    const cur = env[pathKey] || '';
+    if (!cur.toLowerCase().includes(cargoBin.toLowerCase())) {
+      env[pathKey] = cargoBin + path.delimiter + cur;
+    }
   }
   return env;
 }
