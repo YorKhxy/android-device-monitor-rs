@@ -10,6 +10,7 @@
 
 pub mod apps;
 pub mod capture_io;
+pub mod device;
 pub mod files;
 pub mod logcat;
 pub mod mirror;
@@ -50,14 +51,8 @@ fn stub() -> Value {
 // ——— 文件管理/传输 ——（list/delete/create/select_upload → commands::files T4-1；
 //     push/pull → commands::transfer T4-2；resume/discard/get_resume_batches → commands::transfer T4-3）—
 
-// ——— 系统/杂项 ———
-#[tauri::command] pub fn show_item_in_folder() -> Value { stub() }
-#[tauri::command] pub fn open_path() -> Value { stub() }
+// ——— 系统/杂项 ——（sleep/wake/unlock/reboot + show_item_in_folder/open_path 已由 commands::device 接管）—
 #[tauri::command] pub fn get_app_version() -> Value { json!({ "success": true, "data": env!("CARGO_PKG_VERSION") }) }
-#[tauri::command] pub fn sleep_device() -> Value { stub() }
-#[tauri::command] pub fn wake_device() -> Value { stub() }
-#[tauri::command] pub fn unlock_device() -> Value { stub() }
-#[tauri::command] pub fn reboot_device() -> Value { stub() }
 // export_logs / export_full_logs / export_full_logs_by_package 已由 commands::logcat 接管（T4-5）。
 
 // ——— 验证用：暴露运行时根目录，确认落盘锚点正确（不进 C 盘 userData）———

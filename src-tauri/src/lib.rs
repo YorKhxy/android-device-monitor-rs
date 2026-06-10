@@ -94,15 +94,15 @@ pub fn run() {
             commands::transfer::resume_transfers,
             commands::transfer::discard_transfers,
             commands::transfer::get_resume_batches,
-            // 系统/杂项
-            commands::show_item_in_folder,
-            commands::open_path,
+            // 系统/杂项（设备控制 + 本机文件定位 真实现）
+            commands::device::show_item_in_folder,
+            commands::device::open_path,
+            commands::device::sleep_device,
+            commands::device::wake_device,
+            commands::device::unlock_device,
+            commands::device::reboot_device,
             commands::get_app_version,
             updater::get_release_notes,
-            commands::sleep_device,
-            commands::wake_device,
-            commands::unlock_device,
-            commands::reboot_device,
             // 日志导出（T4-5 真实现）
             commands::logcat::export_logs,
             commands::logcat::export_full_logs,
