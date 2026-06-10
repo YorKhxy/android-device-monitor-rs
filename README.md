@@ -31,16 +31,16 @@
 - ✅ **P3 投屏镜像（真机验收通过）**：T3.2 scrcpy 资源准备+二进制定位 / T3.3 进程管理+基础投屏 start/stop / T3.4 Pico 单眼裁切 / T3.5 声音去向实时切换。每 Task 过 code-reviewer 两阶段审查，`cargo test` 15/15，`cargo build` + 前端 `npm run build` 通过。**真机验证：投屏调起+操控正常，声音「设备 + 电脑同时出声」（`--audio-dup`，Android 13+）验证可行。**
   - **T3.1 设备截图（framebuffer 快路/screencap 回退）已剔除**：当前前端无消费方（投屏改为调起独立 scrcpy 窗口看画面），如后续要应用内实时预览再回补 `adb/screenshot.rs`。
   - **关键实现**：scrcpy v3.3.3 经 `scripts/prepare-scrcpy.mjs` 下到 `src-tauri/scrcpy/win/`（三环节：prepare + `tauri.conf.json` resources `scrcpy/**/*` + 运行时 `resolve_scrcpy_path`）；视频主进程恒 `--no-audio`，声音由独立纯音频进程承载（A13+ `--audio-dup` 两边出声 / 低版本 `--audio-source=output` 设备静音）；Pico 查 `wm size` 裁左眼 `--crop 宽/2:高:0:0`；scrcpy 经 `ADB` 环境变量复用 bundled adb 避免 server 版本互踢；进程注册表 generation 防快速重启竞态，退出/关窗自动广播 `mirror_status`。
-- 🚧 **P4 文件管理与传输 + 日志（进行中）**：前端组件（FilesPanel.tsx、SimpleApp 日志逻辑）整体就位，后端从桩逐个实现。拆成 5 个实现 Task：
+- ✅ **P4 文件管理与传输 + 日志（完成，已推 origin/dev）**：5 个实现 Task 全做完，后端从桩逐个落地。前后端 15 个 P4 命令 1:1 对齐、0 残留桩；`cargo test 37/37`、`tsc --noEmit` 0 错。四步走过（Code Review×3 两阶段全 PASS / 测试完整 / 编译 0 警告 / 待真机功能验收）。
   - ✅ **T4-1 文件浏览+增删**（`commands/files.rs`）：list_device_files（ls -al 日期锚定解析）/delete/create/select_upload。commit `c4f32d3`，cargo test 通过，两阶段 review 过。
   - ✅ **T4-2 批量传输 runner+进度**（`transfer/runner.rs` + `commands/transfer.rs`）：push/pull 批量、push_progress/pull_progress、`.part` 原子落地、shell_quote 转义、pull 覆盖式落地。commit `ffc026d`，cargo test 21/21，两阶段 review 过。
   - ✅ **T4-3 传输 journal + 中断恢复 + 关界面续显**（`transfer/journal.rs`）：journal 落运行时根目录 transfer-journal.json（原子写 .tmp+rename），状态 pending/transferring/done/failed 流转；push/pull 前 begin_batch、后 remove_batch（了结即清理）；resume_transfers 文件级续传(已 done 跳过)、discard_transfers 清 .part+移 journal、get_resume_batches 汇总残留；仅崩溃/被杀残留进恢复队列；关界面续显由前端 fileTransferManager 单例承担。commit `3c08eb1`，cargo test 24/24，两阶段 review 过。真机待验：强杀后续传 / 丢弃清残留。
   - ✅ **T4-4 Logcat 流式抓取+解析+批量推送**（`adb/logcat_parser.rs` + `adb/logcat_stream.rs` + `commands/logcat.rs`）：流式 adb logcat -v long *:V、[头]起空行止切分+多行堆栈合并(LogEntry)、log_batch 批量推送(≤200/批 250ms 队列1000)、相关日志口径(pidof 周期解析 pid 命中 OR 文本提包名，前置限流)；恒 *:V minLevel 前端显示筛选；复用 pico_metrics_stream 常驻流范式 + kill_on_drop。commit `c042a26`，cargo test 35/35，两阶段 review 全 PASS。真机待验：多行堆栈整条 / 相关日志降噪 / 高频不卡 UI。
-  - ⏭ **T4-5 日志导出+完整日志录制**（待做，依赖 T4-4，`logging/`）：export_logs/export_full_logs/export_full_logs_by_package（仍桩）；完整日志落 exe 同目录 `device-logs/`（`runtime_root::device_logs_dir`，铁律）；日志打包复用 zip crate（`performance/capture_transfer.rs` 模式）。
-  - 📌 接续提示：新会话直接 `/dev-builder` 继续 P4，从 **T4-5 日志导出+完整日志录制** 起（P4 最后一个 Task）。后端可复用基线：`adb/logcat_stream.rs`（logcat 流，完整日志录制可挂同一流或另起常驻流落盘）、`adb/logcat_parser.rs`（LogEntry/解析）、`performance/capture_transfer.rs`（zip 打包模式）、`runtime_root.rs::device_logs_dir`（完整日志落 exe 同目录 `device-logs/`，铁律）。命令 export_logs / export_full_logs / export_full_logs_by_package 仍桩。依赖（tokio/zip/chrono/regex）已就位。
+  - ✅ **T4-5 日志导出+完整日志录制**（`logging/full_log_recorder.rs` + `commands/logcat.rs`）：完整日志开流起每条原始行(过滤前/全等级)tee 落 exe 同目录 `device-logs/{sanitized}.log`（`runtime_root::device_logs_dir`，铁律），truncate-on-begin=「从监控第一行」，id 比对防 stop/restart 竞态；export_logs(格式化前端条目)/export_full_logs(另存落盘原始)/export_full_logs_by_package(重解析+pidof+相关过滤切子集，多行堆栈整条保留)。commit `c18f36a`，cargo test 37/37，两阶段 review 全 PASS。真机待验：完整日志落盘不进 C 盘 / 三导出文件 / 按包子集。
+  - 📌 P4 真机验收清单：① 文件 强杀后续传 / 丢弃清残留 / 关界面续显；② Logcat 多行堆栈整条 / 相关日志降噪 / 高频不卡 UI；③ 完整日志落 device-logs 不进 C 盘 / export_logs / export_full_logs / 按包导出子集。
 - ⬜ **P5–P7**：弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
+  - 📌 接续提示：P4 完成，下一步 **P5 弱网整形桌面集成**（`/dev-builder` 继续）。助手 APK 随包 + 安装、选目标应用、弱网参数+预设档位、启停(am 下发)、VPN 授权引导+状态、参数热更、实时流量曲线+CSV。详见 DEV-PLAN.md Phase 5（T5.1–T5.7）。
   - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
-  - 📌 独立待修（chip）：`commands/files.rs` 的 delete/create 设备路径同样需 shell_quote 转义（含空格名会破裂），参照 `transfer/runner.rs`。
 
 ## ⏳ 待真机验收（回头补，验完逐条划掉）
 
