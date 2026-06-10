@@ -1,10 +1,14 @@
 # 依赖与构建产物
 node_modules/
 dist/
+release-updates/
 
 # Rust / Tauri
 src-tauri/target/
 src-tauri/gen/
+
+# 热更签名私钥（绝不入库；仅 pubkey 进 tauri.conf.json，私钥走 TAURI_SIGNING_PRIVATE_KEY 环境变量）
+src-tauri/.tauri-keys/
 
 # 规划文档不进 git？——本仓库保留 Spec/DEV-PLAN 作为基准，故不忽略
 

@@ -34,11 +34,7 @@ fn stub() -> Value {
 
 // ——— 投屏 ——（start_mirror / stop_mirror / set_mirror_audio 已由 commands::mirror 接管，T3.3/T3.5）—
 
-// ——— 更新 ———
-#[tauri::command] pub fn check_for_update() -> Value { stub() }
-#[tauri::command] pub fn get_update_status() -> Value { json!({ "success": true, "data": null }) }
-#[tauri::command] pub fn download_update() -> Value { stub() }
-#[tauri::command] pub fn quit_and_install_update() -> Value { stub() }
+// ——— 更新 ——（check/get_status/download/quit_and_install / get_release_notes 已由 updater 接管，T6.2）—
 
 // ——— 应用安装（select_apk_files / install_apk 已由 commands::apps 接管，T2.2）———
 
@@ -58,7 +54,6 @@ fn stub() -> Value {
 #[tauri::command] pub fn show_item_in_folder() -> Value { stub() }
 #[tauri::command] pub fn open_path() -> Value { stub() }
 #[tauri::command] pub fn get_app_version() -> Value { json!({ "success": true, "data": env!("CARGO_PKG_VERSION") }) }
-#[tauri::command] pub fn get_release_notes() -> Value { json!({ "success": true, "data": "" }) }
 #[tauri::command] pub fn sleep_device() -> Value { stub() }
 #[tauri::command] pub fn wake_device() -> Value { stub() }
 #[tauri::command] pub fn unlock_device() -> Value { stub() }

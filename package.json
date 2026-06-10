@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "prepare:scrcpy": "node scripts/prepare-scrcpy.mjs",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "serve:updates": "node scripts/serve-updates.mjs",
+    "make:update": "node scripts/make-update-package.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

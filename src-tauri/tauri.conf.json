@@ -23,9 +23,19 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": ["http://127.0.0.1:8788/updates/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyQjhBRUZGRjI0NUNBNkIKUldScnlrWHkvNjY0RXVIdTJ3MXF5bXZBSzNkUkJPWDhhR3Z6ZDNsNzVvSXNlcGxOamFobWpoa1YK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "resources": [
       "platform-tools/**/*",
       "scrcpy/**/*"
@@ -36,6 +46,14 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "both"
+      }
+    }
   }
 }

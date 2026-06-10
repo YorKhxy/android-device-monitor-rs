@@ -10,12 +10,14 @@ mod mirror;
 mod performance;
 mod runtime_root;
 mod transfer;
+mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // 采集媒体协议 adm-media://<相对路径> → 运行时根目录磁盘文件（视频/截图，支持 Range + CORS）。
         .register_uri_scheme_protocol(performance::media::SCHEME, |_ctx, request| {
             performance::media::handle(&request)
@@ -60,11 +62,11 @@ pub fn run() {
             commands::mirror::start_mirror,
             commands::mirror::stop_mirror,
             commands::mirror::set_mirror_audio,
-            // 更新
-            commands::check_for_update,
-            commands::get_update_status,
-            commands::download_update,
-            commands::quit_and_install_update,
+            // 更新（T6.2 真实现）
+            updater::check_for_update,
+            updater::get_update_status,
+            updater::download_update,
+            updater::quit_and_install_update,
             // 应用安装（T2.2 真实现）
             commands::apps::select_apk_files,
             commands::apps::install_apk,
@@ -96,7 +98,7 @@ pub fn run() {
             commands::show_item_in_folder,
             commands::open_path,
             commands::get_app_version,
-            commands::get_release_notes,
+            updater::get_release_notes,
             commands::sleep_device,
             commands::wake_device,
             commands::unlock_device,
