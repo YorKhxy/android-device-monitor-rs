@@ -1,5 +1,14 @@
 # 变更记录
 
+## [v2.3] - 2026-06-10
+### 变更
+- **Android FPS 口径改用 SurfaceFlinger 合成上屏帧率**（5.x 性能采集 + 数据模型）：原 `dumpsys gfxinfo framestats` 只统计 HWUI 视图树渲染帧，内嵌 Unity/游戏/视频画在自己 SurfaceView+GL 上绕过 HWUI——gfxinfo 抓不到（真机实测内嵌 Unity 时 gfxinfo 仅 0.2fps）。改为主用 `dumpsys SurfaceFlinger --timestats`（Android 12+ BLAST 兼容，按 layer 直给 averageFPS），优先选目标包的 SurfaceView 内容层（排除 `Background for` 背景占位层）、回退主窗口层；SurfaceFlinger 取不到有效值时回退 gfxinfo。timestats 在采集/监控期间启用、退出钩子 disable。
+- 数据结构 `AndroidPerformancePayload` 增 `fpsGfxinfo` / `fpsSurfaceFlinger` / `fpsSurfaceFlingerLayer`；`fpsSource` 标注本拍实际采用源。性能面板「当前 FPS 口径」块新增「FPS 口径对照」行并排展示两者原值。
+- 影响：采集曲线/报告/均值的 FPS 改记 SurfaceFlinger 值（Pico 路径不受影响，仍走原生 PxrMetric）。
+- 背景与决策见会话；Android 13 timestats 方案来源：developer.android.com/games/optimize/framerate。
+
+---
+
 ## [v2.2] - 2026-06-09
 ### 新增
 - **性能采集录制设备声音（可选）**（2.2 功能表 + 5.4 采集会话）：采集设置新增「录制设备声音」开关（默认关）。开启且设备满足「Android 13+ 且音频可捕获」时，采集录制后端从设备端 `screenrecord`（无音）切到 scrcpy `--record`（视频+音频录进同一 MP4），音频用 `--audio-dup`（隐含 `--audio-source=playback`，设备与电脑同时出声、设备不静音）；不满足的设备（Android<13 / 音频捕获不通如部分 Pico）开关置灰提示「该设备不支持录音」，回退原无声 `screenrecord` 兜底。回看 `<video>` 直接播放含音轨 MP4（带音量/静音控制）。沿用 ≤180s 分段实时落盘与缝合架构。复用 P3 投屏已落地的 scrcpy 资源与 `build_audio_args` 的 dup/output 口径。

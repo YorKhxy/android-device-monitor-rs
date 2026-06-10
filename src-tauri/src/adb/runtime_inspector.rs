@@ -38,8 +38,11 @@ pub struct AndroidPerformancePayload {
     pub memory_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_source: Option<String>,
-    // —— 对照探针（与 gfxinfo 并排）：SurfaceFlinger 合成帧率 + 实测 layer ——
-    // 用于内嵌 Unity/游戏等 SurfaceView 场景下 gfxinfo 盲区的真机对比；None 时不序列化。
+    // —— FPS 双口径并排（透明展示，主 fps 取 SurfaceFlinger 优先、gfxinfo 回退）——
+    // gfxinfo 原值（HWUI 视图帧）：SurfaceView 场景下会很低，仅作对照。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps_gfxinfo: Option<f64>,
+    // SurfaceFlinger 合成帧率（能抓内嵌 Unity/游戏的 SurfaceView）+ 实测 layer。None 时不序列化。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_surface_flinger: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,16 +138,28 @@ pub async fn get_android_performance_metrics(
     let cpu = cpu?;
     let gfx = gfx?;
 
-    let fps_source = match &pkg {
-        Some(p) => format!("adb shell dumpsys gfxinfo {p} framestats"),
-        None => "adb shell dumpsys gfxinfo framestats".to_string(),
+    // FPS 口径：主用 SurfaceFlinger timestats（含内嵌 Unity/游戏的 SurfaceView 真实上屏帧率），
+    // 仅当 SurfaceFlinger 拿不到有效值（>0）时回退 gfxinfo（HWUI 视图帧）。两者原值都进 payload 供对照。
+    let gfx_fps = parse_gfx_info(&gfx.stdout);
+    let sf_fps = sf.as_ref().map(|s| s.fps).filter(|f| *f > 0.0);
+    let fps = sf_fps.unwrap_or(gfx_fps);
+
+    let sf_layer = sf.as_ref().map(|s| s.layer.clone());
+    let fps_source = if sf_fps.is_some() {
+        let layer = sf_layer.clone().unwrap_or_default();
+        format!("adb shell dumpsys SurfaceFlinger --timestats（layer: {layer}）")
+    } else {
+        match &pkg {
+            Some(p) => format!("adb shell dumpsys gfxinfo {p} framestats（SurfaceFlinger 回退）"),
+            None => "adb shell dumpsys gfxinfo framestats（SurfaceFlinger 回退）".to_string(),
+        }
     };
 
     Ok(PerformanceMetrics {
         provider: "android".to_string(),
         cpu_usage: parse_cpu_usage(&cpu.stdout),
         memory_usage: parse_memory_usage(&mem.stdout),
-        fps: parse_gfx_info(&gfx.stdout),
+        fps,
         package_name: foreground.package_name.clone(),
         activity_name: foreground.activity_name.clone(),
         android_metrics: Some(AndroidPerformancePayload {
@@ -152,8 +167,9 @@ pub async fn get_android_performance_metrics(
             cpu_source: Some("adb shell top -n 1".to_string()),
             memory_source: Some("adb shell cat /proc/meminfo".to_string()),
             fps_source: Some(fps_source),
+            fps_gfxinfo: Some(gfx_fps),
             fps_surface_flinger: sf.as_ref().map(|s| s.fps),
-            fps_surface_flinger_layer: sf.map(|s| s.layer),
+            fps_surface_flinger_layer: sf_layer,
         }),
         pico_metrics: None,
         pico_metrics_state: None,

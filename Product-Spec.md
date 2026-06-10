@@ -260,7 +260,7 @@
 **监控指标**：
 - CPU 使用率：通过 `top` 命令获取
 - 内存使用：通过 `dumpsys meminfo` 获取
-- FPS：通过 `dumpsys gfxinfo` 等方式获取前台应用渲染帧率，默认定义为应用渲染 FPS，而不是屏幕刷新率
+- FPS（Android 口径，v2.3 起）：主用 `dumpsys SurfaceFlinger --timestats` 取**合成上屏帧率**（能抓到内嵌 Unity/游戏/视频画在自己 SurfaceView 上的真实渲染，含 Android 12+ BLAST 层）；优先选目标包的 SurfaceView 内容层、回退主窗口层。仅当 SurfaceFlinger 取不到有效值（>0）时回退 `dumpsys gfxinfo` framestats（HWUI 视图帧）。性能面板「FPS 口径对照」行并排展示两者原值与本拍实际采用源。默认仍为应用渲染 FPS，非屏幕刷新率。（gfxinfo 对 SurfaceView 类应用是盲区——实测内嵌 Unity 时 gfxinfo 仅 0.2fps、SurfaceFlinger 22.7fps）
 - Pico 官方指标：仅对“已集成 `XR Profiling Toolkit` 的 Pico 应用”承诺提供 `FPS / MTP / FrmCpu / FrmGpu / ATWGPU / GPU` 官方口径
 - 实时预览设备画面：通过截图流或投屏能力，在性能模块中显示当前设备画面
 - 投屏镜像与操控：打包 scrcpy 二进制（随 platform-tools 一并作为 extraResources），主进程以子进程方式 `spawn` scrcpy，传入目标设备序列号与启动参数（码率、分辨率上限、`--crop` 单眼裁切等），调起其原生窗口。镜像、触屏注入、文字输入、物理键映射均由 scrcpy 原生提供；工具侧负责设备选择、参数拼装、进程生命周期管理（启动/停止/异常退出回收）。第一版不做内嵌解码（路线 B 的 WebCodecs 内嵌镜像留作后续升级）。

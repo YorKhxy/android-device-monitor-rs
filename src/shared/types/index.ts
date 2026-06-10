@@ -172,8 +172,9 @@ export interface AndroidPerformancePayload {
   cpuSource?: string;
   memorySource?: string;
   fpsSource?: string;
-  // 对照探针：SurfaceFlinger 合成帧率 + 实测 layer（内嵌 Unity/游戏等 SurfaceView 场景下 gfxinfo 盲区的真机对比）
-  fpsSurfaceFlinger?: number;
+  // FPS 双口径并排（主 fps 取 SurfaceFlinger 优先、gfxinfo 回退）：
+  fpsGfxinfo?: number;          // gfxinfo 原值（HWUI 视图帧；SurfaceView 场景下会很低，仅作对照）
+  fpsSurfaceFlinger?: number;   // SurfaceFlinger 合成帧率（能抓内嵌 Unity/游戏的 SurfaceView）
   fpsSurfaceFlingerLayer?: string;
 }
 
