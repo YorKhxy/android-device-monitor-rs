@@ -114,12 +114,38 @@ function main() {
   });
   run('npm', ['run', 'tauri', 'build'], buildEnv);
 
-  // 生成 latest.json + 拷包（透传 --notes / --base）。
+  // 整理产物到 update-releases/（透传 --notes / --base）。
   const passThrough = process.argv.filter((a) => a.startsWith('--notes=') || a.startsWith('--base='));
   run('node', ['scripts/make-update-package.mjs', ...passThrough], process.env);
 
-  console.log(`\n✅ 热更包 v${version} 完成。起服务：npm run serve:updates（或「启动热更服务器.bat」）`);
-  console.log('   记得把版本号变更提交到 git。');
+  // 发版锚点（对齐老工具）：提交版本号变更并打 tag v<版本>，作为下次自动 release notes 的起点。
+  // 仅在确有版本号变更时提交；打包已成功，打 tag 出岔子不致命，吞掉即可。
+  tagRelease(version);
+
+  console.log(`\n✅ 热更包 v${version} 完成。起服务：「启动热更服务器.bat」（npm run serve:updates）`);
+}
+
+// git 提交版本号文件 + 打 tag（非致命，失败仅提示）。
+function tagRelease(version) {
+  const git = (args) => spawnSync('git', args, { cwd: ROOT, encoding: 'utf8' });
+  try {
+    if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) {
+      console.log('（非 git 仓库，跳过打 tag）');
+      return;
+    }
+    git(['add', 'package.json', 'src-tauri/tauri.conf.json', 'src-tauri/Cargo.toml', 'src-tauri/Cargo.lock']);
+    if (git(['diff', '--cached', '--quiet']).status !== 0) {
+      git(['commit', '-m', `chore: 发布 v${version}`]);
+    }
+    if (!git(['tag', '--list', `v${version}`]).stdout.trim()) {
+      git(['tag', '-a', `v${version}`, '-m', `release v${version}`]);
+      console.log(`✓ 已打 tag v${version}（推送共享：git push origin v${version}）`);
+    } else {
+      console.log(`（tag v${version} 已存在，跳过）`);
+    }
+  } catch (e) {
+    console.log(`（打 tag 跳过，非致命）：${e.message}`);
+  }
 }
 
 main();

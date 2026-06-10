@@ -1,8 +1,9 @@
 # 依赖与构建产物
 node_modules/
 dist/
-release-updates/
-release-portable/
+# 打包产物（绿色包 / 热更包，对齐老工具目录）
+src/release/
+update-releases/
 
 # Rust / Tauri
 src-tauri/target/

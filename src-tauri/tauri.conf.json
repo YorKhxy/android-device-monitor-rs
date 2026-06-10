@@ -25,7 +25,7 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": ["http://127.0.0.1:8788/updates/latest.json"],
+      "endpoints": ["http://127.0.0.1:8384/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEyQjhBRUZGRjI0NUNBNkIKUldScnlrWHkvNjY0RXVIdTJ3MXF5bXZBSzNkUkJPWDhhR3Z6ZDNsNzVvSXNlcGxOamFobWpoa1YK",
       "windows": {
         "installMode": "passive"
