@@ -3,7 +3,7 @@
 
 use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::process::Command;
@@ -26,6 +26,14 @@ pub struct DeviceInfo {
     pub status: String,          // "connected" | "offline" | "unauthorized"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery_level: Option<i64>,
+    // 屏幕状态（息屏/唤醒）：dumpsys power 解析，"on" | "off"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_state: Option<String>,
+    // WiFi 延迟（仅 wifi 设备）：get-state 往返耗时 ms + 状态 "ok" | "unknown"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +190,43 @@ async fn get_battery_level(adb: &Path, device_id: &str) -> Option<i64> {
     None
 }
 
-/// 获取设备列表（对齐原 getDevices：devices -l → 逐设备 getprop + 电量）。
+/// 解析 `dumpsys power` 的屏幕状态：优先 `mWakefulness=Awake/Asleep/Dozing`，回退 `Display Power: state=ON/OFF`。
+/// Awake/ON → "on"，其余 → "off"；都没解析到 → None。
+fn parse_screen_state(stdout: &str) -> Option<&'static str> {
+    if let Some(rest) = stdout.split("mWakefulness=").nth(1) {
+        let word = rest.split_whitespace().next().unwrap_or("");
+        return Some(if word == "Awake" { "on" } else { "off" });
+    }
+    if let Some(rest) = stdout.split("Display Power: state=").nth(1) {
+        let word = rest.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        if word.starts_with("ON") {
+            return Some("on");
+        }
+        if word.starts_with("OFF") {
+            return Some("off");
+        }
+    }
+    None
+}
+
+/// 取屏幕状态（息屏/唤醒）。失败 → None（不显示徽标）。
+async fn get_screen_state(adb: &Path, device_id: &str) -> Option<String> {
+    let out = exec_adb(adb, &["-s", device_id, "shell", "dumpsys", "power"], 4000).await.ok()?;
+    parse_screen_state(&out.stdout).map(|s| s.to_string())
+}
+
+/// 量 WiFi 延迟：`adb get-state` 往返耗时。返回 device → (耗时ms, "ok")；否则 (None, "unknown")。
+async fn measure_wifi_latency(adb: &Path, device_id: &str) -> (Option<i64>, Option<String>) {
+    let started = Instant::now();
+    match exec_adb_capture(adb, &["-s", device_id, "get-state"], 3000).await {
+        Ok(o) if o.stdout.trim() == "device" => {
+            (Some(started.elapsed().as_millis() as i64), Some("ok".to_string()))
+        }
+        _ => (None, Some("unknown".to_string())),
+    }
+}
+
+/// 获取设备列表（对齐原 getDevices：devices -l → 逐设备 getprop + 电量 + 屏幕状态 + WiFi 延迟）。
 pub async fn get_devices(adb: &Path) -> Result<Vec<DeviceInfo>, AdbError> {
     let out = exec_adb(adb, &["devices", "-l"], 8000).await?;
     let summaries = parse_device_summaries(&out.stdout);
@@ -200,6 +244,9 @@ pub async fn get_devices(adb: &Path) -> Result<Vec<DeviceInfo>, AdbError> {
             connection_type: summary.connection_type.clone(),
             status: summary.status.clone(),
             battery_level: None,
+            screen_state: None,
+            latency_ms: None,
+            latency_status: None,
         };
 
         if summary.status == "connected" {
@@ -225,6 +272,12 @@ pub async fn get_devices(adb: &Path) -> Result<Vec<DeviceInfo>, AdbError> {
                 }
             }
             device.battery_level = get_battery_level(adb, &summary.id).await;
+            device.screen_state = get_screen_state(adb, &summary.id).await;
+            if device.connection_type == "wifi" {
+                let (ms, st) = measure_wifi_latency(adb, &summary.id).await;
+                device.latency_ms = ms;
+                device.latency_status = st;
+            }
         }
 
         devices.push(device);
@@ -346,11 +399,22 @@ pub async fn adb_version(adb: &Path) -> Result<Option<String>, AdbError> {
     Ok(version)
 }
 
-/// 设备列表轻量快照（监控轮询 diff 用）：id|status|connType 串联。
+/// 设备列表轻量快照（监控轮询 diff 用）：id|status|connType|屏幕状态|延迟状态 串联。
+/// 纳入屏幕状态与延迟状态（离散值），使息屏/唤醒切换、WiFi 连接稳定性变化能触发 device_list_changed 刷新前端；
+/// 延迟具体 ms 值不入快照（避免每拍抖动刷屏），随每次 emit 一并带出最新值。
 pub fn devices_snapshot(devices: &[DeviceInfo]) -> String {
     let mut parts: Vec<String> = devices
         .iter()
-        .map(|d| format!("{}|{}|{}", d.id, d.status, d.connection_type))
+        .map(|d| {
+            format!(
+                "{}|{}|{}|{}|{}",
+                d.id,
+                d.status,
+                d.connection_type,
+                d.screen_state.as_deref().unwrap_or(""),
+                d.latency_status.as_deref().unwrap_or(""),
+            )
+        })
         .collect();
     parts.sort();
     parts.join(",")
@@ -407,11 +471,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_screen_state_from_dumpsys_power() {
+        assert_eq!(parse_screen_state("  mWakefulness=Awake\n  ..."), Some("on"));
+        assert_eq!(parse_screen_state("mWakefulness=Asleep"), Some("off"));
+        assert_eq!(parse_screen_state("mWakefulness=Dozing"), Some("off"));
+        // 回退 Display Power。
+        assert_eq!(parse_screen_state("Display Power: state=ON"), Some("on"));
+        assert_eq!(parse_screen_state("Display Power: state=OFF"), Some("off"));
+        assert_eq!(parse_screen_state("no relevant field"), None);
+    }
+
+    #[test]
     fn snapshot_is_order_independent() {
         let mk = |id: &str, st: &str| DeviceInfo {
             id: id.into(), name: "x".into(), serial_no: "x".into(), model: "x".into(),
             manufacturer: "x".into(), android_version: "13".into(), api_level: 33,
             connection_type: "usb".into(), status: st.into(), battery_level: None,
+            screen_state: None, latency_ms: None, latency_status: None,
         };
         let a = vec![mk("A", "connected"), mk("B", "offline")];
         let b = vec![mk("B", "offline"), mk("A", "connected")];
