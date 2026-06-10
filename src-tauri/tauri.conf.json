@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "安卓设备监控rs版",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "identifier": "com.androidtool.monitor",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -43,7 +43,8 @@
     "createUpdaterArtifacts": true,
     "resources": [
       "platform-tools/**/*",
-      "scrcpy/**/*"
+      "scrcpy/**/*",
+      "update-config.json"
     ],
     "icon": [
       "icons/32x32.png",
