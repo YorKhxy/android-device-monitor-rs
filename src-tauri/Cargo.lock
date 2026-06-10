@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "android-device-monitor"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -59,6 +59,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-updater",
  "tokio",
+ "url",
  "zip 2.4.2",
 ]
 
