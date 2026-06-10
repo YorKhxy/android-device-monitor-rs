@@ -7,6 +7,7 @@ import { WeakNetPanel } from './components/WeakNetPanel';
 import { Icon, AppAvatar, Badge } from './components/ui';
 import { GlobalTooltip } from './components/GlobalTooltip';
 import { ElectronResult, hasElectronAPI } from './lib/electronApi';
+import { useCooldown } from './lib/useCooldown';
 import {
   buildHistoryEntryFromDevice,
   formatHistoryTime,
@@ -246,6 +247,8 @@ function SimpleApp() {
     });
   const [installedPackages, setInstalledPackages] = useState<string[]>([]);
   const [installedPackagesLoading, setInstalledPackagesLoading] = useState(false);
+  // 已安装应用「刷新」按钮的点击反馈：假冷却让图标转圈（参考采集回看刷新），快操作也有可见反馈。
+  const appRefreshCooldown = useCooldown();
   const [appFilter, setAppFilter] = useState('');
   // 当前设备上在运行的应用包名集合：用于已安装列表标「运行中」并禁止重复启动。轮询刷新，反映真实状态。
   const [runningPackages, setRunningPackages] = useState<Set<string>>(new Set());
@@ -3481,9 +3484,9 @@ function SimpleApp() {
                         </div>
                         <button
                           className="btn secondary sm"
-                          onClick={loadInstalledPackages}
-                          disabled={installedPackagesLoading}
-                        ><Icon name="refresh-cw" />{'刷新'}</button>
+                          onClick={() => appRefreshCooldown.run(loadInstalledPackages)}
+                          disabled={installedPackagesLoading || appRefreshCooldown.cooling}
+                        ><span className={(installedPackagesLoading || appRefreshCooldown.cooling) ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="refresh-cw" /></span>{'刷新'}</button>
                       </div>
                     </div>
 
