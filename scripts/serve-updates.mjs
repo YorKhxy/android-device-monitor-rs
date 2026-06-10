@@ -242,6 +242,16 @@ if (!fs.existsSync(root)) {
   console.warn(`[serve-updates] 警告：服务目录不存在：${root}\n  先运行「打热更包」生成 latest.json 与安装包。`);
 }
 
+// listen 失败（如端口被占用）清楚报错，而非闷崩。
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    console.error(`\n❌ 端口 ${port} 已被占用——可能服务器已在运行，或换个端口： PORT=8385 启动。`);
+  } else {
+    console.error(`\n❌ 服务器出错：${e.message}`);
+  }
+  process.exit(1);
+});
+
 server.listen(port, '0.0.0.0', () => {
   console.log(`[serve-updates] 热更服务器已启动`);
   console.log(`  服务目录：${root}`);
