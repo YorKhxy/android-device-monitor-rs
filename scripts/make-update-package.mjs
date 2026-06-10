@@ -52,11 +52,21 @@ function stamp() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-function findArtifacts() {
+function findArtifacts(version) {
   if (!fs.existsSync(NSIS_DIR)) fail(`未找到打包产物目录：${NSIS_DIR}\n请先 tauri build（带签名环境变量）`);
   const files = fs.readdirSync(NSIS_DIR);
-  const pkg = files.find((f) => f.endsWith('-setup.exe'));
-  if (!pkg) fail(`${NSIS_DIR} 下未找到 *-setup.exe`);
+  const setups = files.filter((f) => f.endsWith('-setup.exe'));
+  // 必须按当前 version 精确选包：nsis 目录不会清理历史产物，会同时残留多版本
+  // setup.exe（如 _0.1.0_ 与 _0.1.2_）。用 find 取第一个会按字典序命中旧版，
+  // 导致 latest.json 写了新版本号、却拷进了旧安装包——装上去仍是旧代码（曾因此把
+  // 缺 dangerousInsecureTransportProtocol 的 0.1.0 当成新版发出去，启动即 panic）。
+  const pkg = setups.find((f) => f.includes(`_${version}_`));
+  if (!pkg) {
+    fail(
+      `${NSIS_DIR} 下未找到当前版本 ${version} 的 *-setup.exe\n` +
+        `现有安装包：${setups.length ? setups.join(', ') : '无'}\n请先用当前版本号 tauri build`
+    );
+  }
   const sig = `${pkg}.sig`;
   if (!files.includes(sig)) fail(`未找到签名文件 ${sig}（确认构建带 TAURI_SIGNING_PRIVATE_KEY 与 _PASSWORD）`);
   return { pkg, sig };
@@ -66,7 +76,7 @@ function main() {
   const version = readVersion();
   const notes = readNotes(version);
   const base = (arg('base') || process.env.UPDATE_BASE_URL || 'http://127.0.0.1:8384').replace(/\/+$/, '');
-  const { pkg, sig } = findArtifacts();
+  const { pkg, sig } = findArtifacts(version);
   const signature = fs.readFileSync(path.join(NSIS_DIR, sig), 'utf8').trim();
 
   const manifest = {
