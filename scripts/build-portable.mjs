@@ -7,7 +7,10 @@
 //   platform-tools/scrcpy（adb/binary.rs、scrcpy.rs 用 resource_dir()=exe 同目录），故资源平铺在 exe 同级。
 //   前端 dist 编译期已嵌入 exe。
 //
-// 步骤：① npm run build 出前端 → ② cargo build --release 出 exe → ③ 组装到 src/release/<yyyy-MM>/<带时间戳名>/
+// 步骤：① tauri build --no-bundle（生产构建：前端嵌入 exe、加载嵌入资源；不打 NSIS、不需签名）
+//       → ② 组装到 src/release/<yyyy-MM>/<带时间戳名>/
+// ⚠️ 必须用 tauri build，不能用 cargo build --release——后者出的是 dev 模式前端（窗口加载 localhost:1420
+//    devUrl，release 无 dev server 故白屏「localhost 拒绝连接」）。
 // 用法：node scripts/build-portable.mjs [--skip-build]
 
 import fs from 'node:fs';
@@ -75,8 +78,8 @@ function main() {
   console.log(`=== 打绿色包 v${version} → ${appName} ===`);
 
   if (!skipBuild) {
-    run('npm', ['run', 'build']); // 前端 → dist/
-    run('cargo', ['build', '--release'], { cwd: SRC_TAURI, env: envWithCargo() }); // exe 嵌入 dist
+    // tauri build 内部会先跑 beforeBuildCommand(npm run build) 再生产编译 exe；--no-bundle 跳过 NSIS 打包。
+    run('npm', ['run', 'tauri', 'build', '--', '--no-bundle'], { env: envWithCargo() });
   }
   if (!fs.existsSync(EXE)) fail(`未找到 release exe：${EXE}\n请去掉 --skip-build 重新构建。`);
   for (const d of ['platform-tools', 'scrcpy']) {
