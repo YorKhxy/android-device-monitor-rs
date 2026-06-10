@@ -62,6 +62,9 @@ pub struct Captured {
 pub async fn exec_adb_capture(adb: &Path, args: &[&str], timeout_ms: u64) -> Result<Captured, AdbError> {
     let mut cmd = Command::new(adb);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // 进程随 future 一起被丢弃时杀掉：传输中止（select 丢弃 push/pull future）或超时（timeout 丢弃 output future）
+    // 都能真正终止 adb 子进程，不留孤儿进程继续占用传输。
+    cmd.kill_on_drop(true);
     #[cfg(windows)]
     {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;

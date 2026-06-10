@@ -94,6 +94,7 @@ pub fn run() {
             commands::transfer::resume_transfers,
             commands::transfer::discard_transfers,
             commands::transfer::get_resume_batches,
+            commands::transfer::cancel_transfer,
             // 系统/杂项（设备控制 + 本机文件定位 真实现）
             commands::device::show_item_in_folder,
             commands::device::open_path,

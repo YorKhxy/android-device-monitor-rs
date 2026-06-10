@@ -6,6 +6,7 @@ import { FilesPanel } from './components/FilesPanel';
 import { WeakNetPanel } from './components/WeakNetPanel';
 import { Icon, AppAvatar, Badge } from './components/ui';
 import { GlobalTooltip } from './components/GlobalTooltip';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { ElectronResult, hasElectronAPI } from './lib/electronApi';
 import { useCooldown } from './lib/useCooldown';
 import {
@@ -317,6 +318,11 @@ function SimpleApp() {
   const [apkInstallStates, setApkInstallStates] = useState<Record<string, DeviceApkInstallState>>({});
   const [pendingApks, setPendingApks] = useState<{ path: string; fileName: string }[]>([]);
   const [isApkDragOver, setIsApkDragOver] = useState(false); // 拖拽 APK 到待安装区时高亮
+  // APK 拖放区元素 + 常驻 Tauri 拖放监听用的 ref（避免闭包捕获旧状态/旧函数）。
+  const apkDropZoneRef = useRef<HTMLDivElement>(null);
+  const addApkRef = useRef<(paths: string[]) => void>(() => {});
+  const fileBrowserOpenRef = useRef(false);
+  const unifiedInstallingRef = useRef(false);
   // 安装过程日志：每条带时间戳，最新在上。展示在「安装详情」模块里。
   const [installLog, setInstallLog] = useState<{ text: string; level: 'info' | 'success' | 'error' }[]>([]);
   const [installTargets, setInstallTargets] = useState<Set<string>>(new Set());
@@ -743,6 +749,54 @@ function SimpleApp() {
       window.removeEventListener('dragover', prevent);
       window.removeEventListener('drop', prevent);
     };
+  }, []);
+
+  // 让常驻拖放监听读到最新状态/函数（监听只注册一次，不随每次渲染重建）。
+  fileBrowserOpenRef.current = Boolean(fileBrowserDevice);
+  unifiedInstallingRef.current = isUnifiedInstalling;
+
+  // OS 文件拖入待安装区：Tauri 拦截 webview 文件拖放，DOM onDrop 收不到 OS 文件（且 File 无 .path）。
+  // 改用 webview 原生拖放事件拿真实本地路径；仅当拖放落在 APK 拖放区矩形内才接收（按 position 命中判定，
+  // position 为物理像素需除以 devicePixelRatio 换成 CSS 像素再比对）。单个/多个 .apk 均支持，非 apk 过滤后提示。
+  // 文件管理弹窗打开时让位给 FilesPanel 的上传监听，避免一次拖放被两处同时处理。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const inZone = (pos: { x: number; y: number }) => {
+      const el = apkDropZoneRef.current;
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const x = pos.x / dpr;
+      const y = pos.y / dpr;
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (fileBrowserOpenRef.current) return; // 文件管理打开时交给 FilesPanel 处理
+        const p = event.payload;
+        if (p.type === 'drop') {
+          setIsApkDragOver(false);
+          if (unifiedInstallingRef.current) return;
+          if (!inZone(p.position)) return;
+          const all = (p.paths ?? []).filter(Boolean);
+          const apks = all.filter((x) => x.toLowerCase().endsWith('.apk'));
+          if (apks.length === 0) {
+            if (all.length > 0) setError('只能拖入 .apk 安装包');
+            return;
+          }
+          addApkRef.current(apks);
+          setError('');
+        } else if (p.type === 'leave') {
+          setIsApkDragOver(false);
+        } else {
+          // enter / over：仅当落在拖放区内才高亮
+          setIsApkDragOver(!unifiedInstallingRef.current && inZone(p.position));
+        }
+      })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; if (unlisten) unlisten(); };
   }, []);
 
   // 安全兜底：万一初始化某步卡住，最多 15 秒后也撤掉「启动中」遮罩，避免永久锁死。
@@ -1511,6 +1565,8 @@ function SimpleApp() {
       return [...prev, ...added];
     });
   };
+  // 同步给常驻拖放监听，使其始终调用到最新闭包。
+  addApkRef.current = addApkFilesByPath;
 
   const selectApkFiles = async () => {
     if (!hasElectronAPI()) {
@@ -1529,24 +1585,6 @@ function SimpleApp() {
     } catch (err) {
       setError('选择安装包失败：' + (err as Error).message);
     }
-  };
-
-  // 拖拽 APK 到待安装区：Electron 28 的 drop File 仍带 .path（宿主绝对路径），直接取用。
-  const handleApkDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsApkDragOver(false);
-    if (isUnifiedInstalling) return;
-    const files = Array.from(e.dataTransfer.files || []);
-    const paths = files
-      .map((f) => (f as File & { path?: string }).path || '')
-      .filter(Boolean);
-    const apks = paths.filter((p) => p.toLowerCase().endsWith('.apk'));
-    if (apks.length === 0) {
-      if (files.length > 0) setError('只能拖入 .apk 安装包');
-      return;
-    }
-    addApkFilesByPath(apks);
-    setError('');
   };
 
   const removePendingApk = (path: string) => {
@@ -2260,11 +2298,8 @@ function SimpleApp() {
         <div style={{ flex: 3, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
         {/* 拖放区：无文件时图标提示，有文件时放 chip */}
         <div
+          ref={apkDropZoneRef}
           onClick={() => { if (!isUnifiedInstalling) selectApkFiles(); }}
-          onDragOver={(e) => { e.preventDefault(); if (!isUnifiedInstalling) setIsApkDragOver(true); }}
-          onDragEnter={(e) => { e.preventDefault(); if (!isUnifiedInstalling) setIsApkDragOver(true); }}
-          onDragLeave={(e) => { e.preventDefault(); setIsApkDragOver(false); }}
-          onDrop={handleApkDrop}
           style={{
             flex: 1,
             minHeight: '90px',

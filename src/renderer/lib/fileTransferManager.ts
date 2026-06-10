@@ -49,6 +49,15 @@ export const subscribeTransfer = (callback: () => void): (() => void) => {
   };
 };
 
+// 中止当前进行中的传输（上传或下载，单/多文件通用）。按当前活跃的进度通道 id 通知后端，
+// 后端 kill 掉正在跑的 adb 进程、清半成品、停整批；进度条随后端返回后由各自 finally 清空。
+export const cancelActiveTransfer = async (): Promise<void> => {
+  if (!hasElectronAPI() || !window.electronAPI) return;
+  const id = activeUploadId ?? activePullId;
+  if (!id) return;
+  await window.electronAPI.cancelTransfer(id);
+};
+
 // 是否有传输进行中（可选限定设备）
 export const isTransferActive = (deviceId?: string): boolean => {
   const active = Boolean(state.upload || state.pull);
@@ -85,7 +94,7 @@ export const startUpload = async (
 // 发起批量下载。语义同上。
 export const startPullFiles = async (
   deviceId: string,
-  items: { path: string; name: string }[],
+  items: { path: string; name: string; size: number }[],
   sourceDir: string
 ): Promise<ElectronResult<PullFilesResult>> => {
   ensureInit();
@@ -96,7 +105,7 @@ export const startPullFiles = async (
   activePullId = pullId;
   state.deviceId = deviceId;
   state.pullDir = sourceDir;
-  state.pull = { pullId, fileName: '', index: 0, total: items.length, status: 'downloading' };
+  state.pull = { pullId, fileName: '', index: 0, total: items.length, percent: 0, status: 'downloading' };
   emit();
   try {
     return await window.electronAPI.pullDeviceFiles(deviceId, items, pullId);
@@ -135,7 +144,7 @@ export const startResumeTransfer = async (
   }
   activePullId = transferId;
   state.pullDir = null;
-  state.pull = { pullId: transferId, fileName: '', index: 0, total: batch.remaining, status: 'downloading' };
+  state.pull = { pullId: transferId, fileName: '', index: 0, total: batch.remaining, percent: 0, status: 'downloading' };
   emit();
   try {
     return await window.electronAPI.resumeTransfers(batch.batchId, transferId);

@@ -99,7 +99,8 @@ export interface ElectronAPI {
   openPath: (targetPath: string) => Promise<ElectronResult<undefined>>;
   getAppVersion: () => Promise<ElectronResult<string>>;
   getReleaseNotes: () => Promise<ElectronResult<string>>;
-  pullDeviceFiles: (deviceId: string, items: { path: string; name: string }[], pullId: string) => Promise<ElectronResult<PullFilesResult>>;
+  pullDeviceFiles: (deviceId: string, items: { path: string; name: string; size: number }[], pullId: string) => Promise<ElectronResult<PullFilesResult>>;
+  cancelTransfer: (transferId: string) => Promise<ElectronResult<undefined>>;
   onPullProgress: (callback: (progress: PullProgress) => void) => () => void;
   selectUploadFiles: () => Promise<ElectronResult<string[]>>;
   pushDeviceFile: (deviceId: string, remoteDir: string, localPaths: string[], uploadId: string) => Promise<ElectronResult<number>>;

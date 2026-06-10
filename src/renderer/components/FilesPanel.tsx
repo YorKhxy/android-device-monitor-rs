@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DeviceInfo, DeviceFileEntry, TransferResumeBatch } from '@/shared/types';
 import { hasElectronAPI } from '@/renderer/lib/electronApi';
-import { getTransferState, subscribeTransfer, startUpload, startPullFiles, startResumeTransfer } from '@/renderer/lib/fileTransferManager';
+import { getTransferState, subscribeTransfer, startUpload, startPullFiles, startResumeTransfer, cancelActiveTransfer } from '@/renderer/lib/fileTransferManager';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { Icon, Badge } from './ui';
 
 interface FilesPanelProps {
@@ -69,6 +70,10 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [dragOver, setDragOver] = useState(false);
   const uploadDirRef = useRef<string>(ROOT_PATH);
+  // 用户点了「中止」：传输返回后据此把提示显示为「已中止」而非「已完成」。
+  const cancelledRef = useRef(false);
+  // 持有最新的 uploadFiles，供常驻的 Tauri 拖放监听调用（避免闭包捕获到旧 deviceId/目录）。
+  const uploadFilesRef = useRef<(paths: string[]) => void>(() => {});
   // 上传/批量下载进度来自传输管理器（单例，不随本组件卸载消失）。订阅它，关界面再打开仍能显示回正在进行的进度。
   const [transfer, setTransfer] = useState(getTransferState());
   // 新建文件夹：creatingFolder 控制输入行显隐，newFolderName 为输入值，creatingFolderBusy 防重复提交
@@ -86,6 +91,12 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   const uploadDir = transfer.deviceId === deviceId ? transfer.uploadDir : null;
   const pull = transfer.deviceId === deviceId ? transfer.pull : null;
   const pullDir = transfer.deviceId === deviceId ? transfer.pullDir : null;
+  // 上传整体进度：已传完的文件数 + 当前文件已传字节占比，再除以总文件数。多文件时进度条平滑走满整批，
+  // 不随单个文件归零；upload.percent 是当前文件 0-100（后端每 500ms 轮询设备端字节算出），done 时为 100。
+  const uploadOverall = upload ? Math.round(((upload.index + upload.percent / 100) / upload.total) * 100) : 0;
+  // 下载整体进度：同上传口径——已下完文件数 + 当前文件已落字节占比，再除以总文件数。
+  // pull.percent 是当前文件 0-100（后端每 500ms 轮询本地 .part 大小 / 远端文件大小算出）；文件大小未知时停在 0、done 时为 100。
+  const pullOverall = pull ? Math.round(((pull.index + pull.percent / 100) / pull.total) * 100) : 0;
   // 传输（上传 / 下载）进行中：禁止删除与再次下载，避免删掉/重复拉取正在传输的文件
   const transferBusy = Boolean(upload) || Boolean(pull);
 
@@ -138,12 +149,17 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
 
   // 下载（单个或多个）走传输管理器：绿色进度条、点击进度条跳转、关界面不中断、重开续显进度。
   // 返回是否成功，供批量下载据此清空选择。
-  const runDownload = async (items: { path: string; name: string }[]): Promise<boolean> => {
+  const runDownload = async (items: { path: string; name: string; size: number }[]): Promise<boolean> => {
     if (!deviceId || !hasElectronAPI() || items.length === 0) return false;
+    cancelledRef.current = false; // 新传输开始，清掉可能残留的中止标志
     setNotice('');
     setLastDownloadPath(null);
     try {
       const result = await startPullFiles(deviceId, items, currentPath);
+      // 中止的提示统一交给 transferBusy effect 收尾；中止不显示「打开下载目录」（不设 lastDownloadPath）。
+      if (cancelledRef.current) {
+        return false;
+      }
       if (result.success && result.data) {
         const { savedDir, succeeded, failed } = result.data;
         setNotice(`已下载 ${succeeded} 个到 ${savedDir}${failed > 0 ? `，${failed} 个失败` : ''}`);
@@ -162,7 +178,7 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   };
 
   const downloadOne = (entry: DeviceFileEntry) => {
-    runDownload([{ path: entry.path, name: entry.name }]);
+    runDownload([{ path: entry.path, name: entry.name, size: entry.size }]);
   };
 
   // 删除采用行内二次确认：第一次点「删除」进入确认态，再点「确认删除」才真正删除。
@@ -208,7 +224,7 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
     // 只下载文件，忽略目录（目录批量下载交互复杂，单独「下载」按钮已支持单个目录）
     const items = entries
       .filter((e) => selectedPaths.has(e.path) && !e.isDir)
-      .map((e) => ({ path: e.path, name: e.name }));
+      .map((e) => ({ path: e.path, name: e.name, size: e.size }));
     if (items.length === 0) {
       onError('选中项中没有可下载的文件（目录请用行内「下载」按钮）');
       return;
@@ -259,6 +275,31 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   // 订阅传输管理器：进度变化时刷新本组件展示（管理器常驻，关界面再打开仍能拿到正在进行的进度）
   useEffect(() => subscribeTransfer(() => setTransfer(getTransferState())), []);
 
+  // OS 文件拖入上传：Tauri 默认拦截 webview 文件拖放，DOM onDrop 收不到 OS 文件（且 File 无 .path）。
+  // 改用 webview 原生拖放事件拿真实本地路径，拖入即上传到当前目录；拖放期间高亮整个面板。
+  // 用 uploadFilesRef 调用最新闭包，避免监听捕获到旧的 deviceId/目标目录。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === 'drop') {
+          setDragOver(false);
+          const paths = (p.paths ?? []).filter(Boolean);
+          if (paths.length > 0) uploadFilesRef.current(paths);
+        } else if (p.type === 'leave') {
+          setDragOver(false);
+        } else {
+          // enter / over
+          setDragOver(true);
+        }
+      })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; if (unlisten) unlisten(); };
+  }, []);
+
   // 拉取当前设备的未完成传输批次（拉取式，无启动时序竞态）。仅保留属于本设备的。
   const refreshResumeBatches = useCallback(async () => {
     if (!deviceId || !hasElectronAPI() || !window.electronAPI) {
@@ -274,6 +315,28 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   useEffect(() => {
     void refreshResumeBatches();
   }, [refreshResumeBatches]);
+
+  // 传输结束（transferBusy 由进行中变空闲）后重新拉一次 journal，清掉「幻影」恢复提示：
+  // 中途关界面再打开时，进行中的批次在 journal 里仍是 transferring，会被 refreshResumeBatches 抓成 resumeBatches
+  // （此时被 transferBusy 隐藏）；下载传完后后端已 remove_batch、journal 已清，但前端那份旧 resumeBatches 不会自己更新，
+  // 隐藏一解除就冒出来。传完即重拉，读到的是干净 journal，幻影自然消失。
+  useEffect(() => {
+    if (!transferBusy) void refreshResumeBatches();
+  }, [transferBusy, refreshResumeBatches]);
+
+  // 中止提示收尾：传输结束（transferBusy→false）时若本组件曾点过「中止」，显示「已中止」。
+  // 用全局传输状态驱动而非发起上传的组件闭包——否则「关界面再打开后点中止」会因发起组件已卸载，
+  // 收尾逻辑跑在旧实例里，当前实例永远停在「正在中止…」。
+  useEffect(() => {
+    if (!transferBusy && cancelledRef.current) {
+      cancelledRef.current = false;
+      setNotice('已中止');
+      setNoticeKind('warn');
+      setLastDownloadPath(null); // 中止不展示「打开下载目录」（含清掉上次成功下载残留的按钮）
+    }
+    // 仅对 transferBusy 变化作出反应；其余依赖刻意排除。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transferBusy]);
 
   // 「继续」：恢复该批次，进度复用现有传输进度条；完成后刷新提示（批次清空则消失）。
   const handleResumeBatch = async (batch: TransferResumeBatch) => {
@@ -297,10 +360,16 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
 
   const uploadFiles = async (localPaths: string[]) => {
     if (!deviceId || !hasElectronAPI() || localPaths.length === 0) return;
+    cancelledRef.current = false; // 新传输开始，清掉可能残留的中止标志
     const targetDir = uploadDirRef.current;
     setNotice('');
     try {
       const result = await startUpload(deviceId, targetDir, localPaths);
+      // 中止的提示统一交给 transferBusy effect 收尾（跨组件实例也能正确显示「已中止」）。
+      if (cancelledRef.current) {
+        loadDir(targetDir);
+        return;
+      }
       if (result.success) {
         setNotice(`已上传 ${result.data} 个文件到 ${targetDir}`);
         setNoticeKind('success');
@@ -311,6 +380,16 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
     } catch (err) {
       onError('上传失败：' + (err as Error).message);
     }
+  };
+  // 每次渲染刷新 ref，让常驻拖放监听始终调用到最新闭包。
+  uploadFilesRef.current = uploadFiles;
+
+  // 中止当前传输（上传/下载通用）：标记后通知后端 kill adb 进程，进度条随返回清空。
+  const abortTransfer = () => {
+    cancelledRef.current = true;
+    setNotice('正在中止…');
+    setNoticeKind('warn');
+    void cancelActiveTransfer();
   };
 
   const handleUploadClick = async () => {
@@ -350,20 +429,6 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
       onError('创建文件夹失败：' + (err as Error).message);
     } finally {
       setCreatingFolderBusy(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-    // Electron 渲染层 File 对象带 .path 绝对路径
-    const paths = Array.from(e.dataTransfer.files)
-      .map((f) => (f as File & { path?: string }).path)
-      .filter((p): p is string => Boolean(p));
-    if (paths.length > 0) {
-      uploadFiles(paths);
-    } else {
-      onError('无法获取拖入文件的路径，请改用「上传文件」按钮');
     }
   };
 
@@ -407,9 +472,6 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
   return (
     <div
       style={{ padding: '16px', color: 'var(--fg-primary)', position: 'relative', display: 'flex', flexDirection: 'column', maxHeight: '100%', minHeight: 0, boxSizing: 'border-box', width: '100%' }}
-      onDragOver={(e) => { e.preventDefault(); if (!dragOver) setDragOver(true); }}
-      onDragLeave={(e) => { e.preventDefault(); if (e.currentTarget === e.target) setDragOver(false); }}
-      onDrop={handleDrop}
     >
       {dragOver && (
         <div style={{ position: 'absolute', inset: '8px', border: '2px dashed var(--accent)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--accent-soft)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10, pointerEvents: 'none' }}>
@@ -511,8 +573,10 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
       )}
 
       {/* 未完成传输恢复提示：进入该设备文件管理时若有上次没传完的批次，就地提示继续/丢弃。
-          上传/下载用方向徽标（箭头+配色+文案）明显区分：上传=蓝色↑，下载=青色↓。 */}
-      {resumeBatches.map((batch) => {
+          上传/下载用方向徽标（箭头+配色+文案）明显区分：上传=蓝色↑，下载=青色↓。
+          传输进行中（transferBusy）时隐藏：此时「继续」本就禁用，与下方实时进度条并存会重复，
+          界面统一只留进度条；传输结束后若仍有残留批次会重新出现。 */}
+      {!transferBusy && resumeBatches.map((batch) => {
         const busy = resumeBusyBatchId === batch.batchId;
         const isUpload = batch.direction === 'upload';
         const accent = isUpload ? 'var(--accent)' : 'var(--info)'; // 上传蓝 / 下载青
@@ -561,7 +625,16 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
               {upload.status === 'error' ? '上传失败：' : '上传中：'}{upload.fileName || '准备中…'}
               {upload.total > 1 && ` (${upload.index + 1}/${upload.total})`}
             </span>
-            <span style={{ fontFamily: 'var(--font-mono)' }}>{upload.percent}%</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{uploadOverall}%</span>
+              {upload.status !== 'error' && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); abortTransfer(); }}
+                  className="btn sm outline o-red"
+                  style={{ flexShrink: 0, padding: '1px 8px' }}
+                >中止</button>
+              )}
+            </span>
           </div>
           {uploadDir && (
             <div style={{ fontSize: '11px', color: 'var(--fg-tertiary)', marginBottom: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }} data-tip={uploadDir}>
@@ -569,7 +642,7 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
             </div>
           )}
           <div style={{ height: '6px', backgroundColor: 'var(--bg-active)', borderRadius: '3px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${upload.percent}%`, backgroundColor: upload.status === 'error' ? 'var(--danger)' : 'var(--accent)', transition: 'width 240ms ease' }} />
+            <div style={{ height: '100%', width: `${uploadOverall}%`, backgroundColor: upload.status === 'error' ? 'var(--danger)' : 'var(--accent)', transition: 'width 240ms ease' }} />
           </div>
         </div>
       )}
@@ -677,7 +750,16 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
               {pull.status === 'error' ? '下载失败：' : '下载中：'}{pull.fileName || '准备中…'} ({pull.index + 1}/{pull.total})
             </span>
-            <span style={{ fontFamily: 'var(--font-mono)' }}>{Math.round(((pull.index + (pull.status === 'done' ? 1 : 0)) / pull.total) * 100)}%</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{pullOverall}%</span>
+              {pull.status !== 'error' && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); abortTransfer(); }}
+                  className="btn sm outline o-red"
+                  style={{ flexShrink: 0, padding: '1px 8px' }}
+                >中止</button>
+              )}
+            </span>
           </div>
           {pullDir && (
             <div style={{ fontSize: '11px', color: 'var(--fg-tertiary)', marginBottom: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }} data-tip={pullDir}>
@@ -685,7 +767,7 @@ export const FilesPanel: React.FC<FilesPanelProps> = ({ selectedDevice, onError 
             </div>
           )}
           <div style={{ height: '6px', backgroundColor: 'var(--bg-active)', borderRadius: '3px', overflow: 'hidden' }}>
-            <div style={{ height: '100%', width: `${Math.round(((pull.index + (pull.status === 'done' ? 1 : 0)) / pull.total) * 100)}%`, backgroundColor: 'var(--success)', transition: 'width 240ms ease' }} />
+            <div style={{ height: '100%', width: `${pullOverall}%`, backgroundColor: 'var(--success)', transition: 'width 240ms ease' }} />
           </div>
         </div>
       )}

@@ -107,6 +107,7 @@ const api: ElectronAPI = {
   pullDeviceFile: (deviceId, remotePath, name, isDir) =>
     call('pull_device_file', { deviceId, remotePath, name, isDir }),
   pullDeviceFiles: (deviceId, items, pullId) => call('pull_device_files', { deviceId, items, pullId }),
+  cancelTransfer: (transferId) => call('cancel_transfer', { transferId }),
   deleteDeviceFile: (deviceId, remotePath, isDir) =>
     call('delete_device_file', { deviceId, remotePath, isDir }),
   createDeviceFolder: (deviceId, dirPath, name) => call('create_device_folder', { deviceId, dirPath, name }),

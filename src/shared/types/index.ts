@@ -62,6 +62,7 @@ export interface PullProgress {
   fileName: string;
   index: number;       // 当前是第几个文件（从 0 起）
   total: number;       // 本批共多少个文件
+  percent: number;     // 当前文件 0-100（后端每 500ms 轮询本地 .part 文件大小 / 远端文件大小算出；大小未知时停在 0，落地成功报 100）
   status: 'downloading' | 'done' | 'error';
   error?: string;
 }

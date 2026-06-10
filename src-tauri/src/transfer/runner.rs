@@ -2,15 +2,18 @@
 //!
 //! 原子落地：先传到隐藏临时名 `.<name>.part`，整文件传完校验成功后 rename 到正式名——
 //! 中途崩溃/失败只留 `.part` 半成品（可辨识、不污染正式文件）。文件级进度（index/total + status）
-//! 即时上报；文件内细粒度百分比依赖 adb 输出格式，留真机确认后增强（当前 push 报 0/100）。
+//! 即时上报；上传每 500ms 轮询设备端临时文件大小、下载每 500ms 轮询本地 .part 大小（按远端 size 换算），
+//! 各算文件内实时百分比（封顶 99%，100% 留给落地成功那一帧；大小未知/目录则退化为文件级进度）。
 //!
 //! 注：传输 journal 持久化与中断恢复见 T4-3（transfer/journal）。
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use super::cancel;
 use super::journal;
 use crate::adb::error::AdbError;
 use crate::adb::manager::exec_adb_capture;
@@ -38,17 +41,21 @@ struct PullProgress {
     file_name: String,
     index: u32,
     total: u32,
+    percent: u32,
     status: String, // "downloading" | "done" | "error"
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
-/// 待下载项（对齐前端 pullDeviceFiles 的 items：设备端路径 + 名称）。
+/// 待下载项（对齐前端 pullDeviceFiles 的 items：设备端路径 + 名称 + 远端大小）。
+/// `size` 用于下载实时进度：轮询本地 .part 已落字节 / size 算百分比；目录或大小未知时为 0，退化为文件级进度。
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullItem {
     pub path: String,
     pub name: String,
+    #[serde(default)]
+    pub size: u64,
 }
 
 fn emit_push(app: &AppHandle, p: PushProgress) {
@@ -88,11 +95,19 @@ pub async fn push_files(
     local_paths: &[String],
     progress_id: &str,
     batch_id: &str,
+    stop_on_error: bool,
 ) -> u32 {
     let total = local_paths.len() as u32;
     let mut succeeded: u32 = 0;
+    // 中止支持：注册取消句柄；中途中止时记下被打断文件的设备端临时名，跳出循环后再清（此时 push future 已 drop→adb 被 kill）。
+    let cancel_notify = cancel::register(progress_id);
+    let mut cancelled_part: Option<String> = None;
 
     for (i, local) in local_paths.iter().enumerate() {
+        // 文件间检查：已请求中止则不再起新文件（文件内中止靠下方 select 的 notified 分支即时响应）。
+        if cancel::is_cancelled(progress_id) {
+            break;
+        }
         let index = i as u32;
         let file_name = Path::new(local)
             .file_name()
@@ -115,13 +130,61 @@ pub async fn push_files(
         let q_tmp = shell_quote(&remote_tmp);
         let q_final = shell_quote(&remote_final);
 
-        let pushed = exec_adb_capture(
-            adb,
-            &["-s", device_id, "push", local, &remote_tmp],
-            TRANSFER_TIMEOUT_MS,
-        )
-        .await;
+        // 上传期间每 500ms 轮询设备端临时文件已写入字节，换算实时百分比上报（对齐老工具）。
+        // push future 与轮询并发：select 命中 sleep 分支时 adb push 进程仍在后台跑，stat 不阻断传输；
+        // 文件名/大小取不到时 total_bytes=0，轮询分支被 guard 关闭，退化为只等 push 完成报 0/100。
+        let total_bytes = std::fs::metadata(local).map(|m| m.len()).unwrap_or(0);
+        // 参数数组绑成具名局部：future 被 pin 到 loop 期间持有对它的借用，匿名临时数组会在建 future 的语句末被释放。
+        let push_args: [&str; 5] = ["-s", device_id, "push", local, &remote_tmp];
+        let push_fut = exec_adb_capture(adb, &push_args, TRANSFER_TIMEOUT_MS);
+        tokio::pin!(push_fut);
+        let cancelled_fut = cancel_notify.notified();
+        tokio::pin!(cancelled_fut);
+        // None = 文件内被中止：跳出循环让 push_fut 在作用域末被 drop（kill_on_drop 杀掉 adb push），循环外再清设备端 .part。
+        let pushed: Option<Result<_, _>> = loop {
+            tokio::select! {
+                res = &mut push_fut => break Some(res),
+                _ = &mut cancelled_fut => break None,
+                _ = tokio::time::sleep(Duration::from_millis(500)), if total_bytes > 0 => {
+                    // stat 失败（文件还没建/路径异常）静默跳过本次轮询，不影响传输。
+                    if let Ok(out) = exec_adb_capture(
+                        adb,
+                        &["-s", device_id, "shell", "stat", "-c", "%s", &q_tmp],
+                        5_000,
+                    ).await {
+                        if out.success {
+                            if let Ok(written) = out.stdout.trim().parse::<u64>() {
+                                if written > 0 {
+                                    // 封顶 99%：100% 留给 mv 落地成功后那一帧，避免提前报满。
+                                    let percent = (written.saturating_mul(100) / total_bytes).min(99) as u32;
+                                    emit_push(app, PushProgress {
+                                        upload_id: progress_id.to_string(),
+                                        file_name: file_name.clone(),
+                                        index,
+                                        total,
+                                        percent,
+                                        status: "uploading".to_string(),
+                                        error: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
 
+        let pushed = match pushed {
+            Some(r) => r,
+            None => {
+                // 中止：循环外清设备端半成品；当前文件不计成功，整批停在这里。
+                cancelled_part = Some(q_tmp.clone());
+                journal::mark(batch_id, &file_name, "failed");
+                break;
+            }
+        };
+
+        let mut file_failed = false;
         match pushed {
             Ok(out) if out.success => {
                 // 原子落地：临时名 → 正式名（同目录 mv -f，覆盖同名正式文件 = 重传覆盖语义）。
@@ -148,6 +211,7 @@ pub async fn push_files(
                     let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
                     journal::mark(batch_id, &file_name, "failed");
                     emit_push(app, push_error(progress_id, &file_name, index, total, err));
+                    file_failed = true;
                 }
             }
             Ok(out) => {
@@ -155,14 +219,25 @@ pub async fn push_files(
                 let msg = out.stderr.trim();
                 journal::mark(batch_id, &file_name, "failed");
                 emit_push(app, push_error(progress_id, &file_name, index, total, if msg.is_empty() { "上传失败".to_string() } else { msg.to_string() }));
+                file_failed = true;
             }
             Err(e) => {
                 let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
                 journal::mark(batch_id, &file_name, "failed");
                 emit_push(app, push_error(progress_id, &file_name, index, total, e.message));
+                file_failed = true;
             }
         }
+        // 对齐老工具：新建上传首个文件失败即中止整批（stop_on_error=true）；恢复传输则继续传完其余（false）。
+        if file_failed && stop_on_error {
+            break;
+        }
     }
+    // 中止后清被打断文件的设备端 .part（此时 push future 已 drop、adb push 已被 kill，可安全删）。
+    if let Some(q_tmp) = cancelled_part {
+        let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &q_tmp], 15_000).await;
+    }
+    cancel::unregister(progress_id);
     succeeded
 }
 
@@ -203,8 +278,14 @@ pub async fn pull_files(
     let total = items.len() as u32;
     let mut succeeded: u32 = 0;
     let mut failed: u32 = 0;
+    // 中止支持：注册取消句柄；中途中止时记下被打断文件的本地临时路径，跳出循环后再删（此时 pull future 已 drop→adb 被 kill）。
+    let cancel_notify = cancel::register(progress_id);
+    let mut cancelled_part: Option<PathBuf> = None;
 
     for (i, item) in items.iter().enumerate() {
+        if cancel::is_cancelled(progress_id) {
+            break;
+        }
         let index = i as u32;
         journal::mark(batch_id, &item.name, "transferring");
         emit_pull(app, PullProgress {
@@ -212,6 +293,7 @@ pub async fn pull_files(
             file_name: item.name.clone(),
             index,
             total,
+            percent: 0,
             status: "downloading".to_string(),
             error: None,
         });
@@ -220,12 +302,48 @@ pub async fn pull_files(
         let local_final: PathBuf = save_dir.join(&item.name);
         let tmp_str = local_tmp.to_string_lossy().to_string();
 
-        let pulled = exec_adb_capture(
-            adb,
-            &["-s", device_id, "pull", &item.path, &tmp_str],
-            TRANSFER_TIMEOUT_MS,
-        )
-        .await;
+        // 下载期间每 500ms 轮询本地 .part 已落字节，按远端 size 换算实时百分比上报（比上传的设备端 stat 更省事，直接读本地 fs）。
+        // pull future 与轮询并发；item.size=0（目录/大小未知）时轮询分支被 guard 关闭，退化为只报文件级进度。
+        let pull_args: [&str; 5] = ["-s", device_id, "pull", &item.path, &tmp_str];
+        let pull_fut = exec_adb_capture(adb, &pull_args, TRANSFER_TIMEOUT_MS);
+        tokio::pin!(pull_fut);
+        let cancelled_fut = cancel_notify.notified();
+        tokio::pin!(cancelled_fut);
+        // None = 文件内被中止：跳出循环让 pull_fut 在作用域末被 drop（kill_on_drop 杀掉 adb pull），循环外再删本地 .part。
+        let pulled: Option<Result<_, _>> = loop {
+            tokio::select! {
+                res = &mut pull_fut => break Some(res),
+                _ = &mut cancelled_fut => break None,
+                _ = tokio::time::sleep(Duration::from_millis(500)), if item.size > 0 => {
+                    if let Ok(meta) = tokio::fs::metadata(&local_tmp).await {
+                        let written = meta.len();
+                        if written > 0 {
+                            // 封顶 99%：100% 留给落地成功那一帧。
+                            let percent = (written.saturating_mul(100) / item.size).min(99) as u32;
+                            emit_pull(app, PullProgress {
+                                pull_id: progress_id.to_string(),
+                                file_name: item.name.clone(),
+                                index,
+                                total,
+                                percent,
+                                status: "downloading".to_string(),
+                                error: None,
+                            });
+                        }
+                    }
+                }
+            }
+        };
+
+        let pulled = match pulled {
+            Some(r) => r,
+            None => {
+                // 中止：循环外删本地半成品；当前文件不计成败，整批停在这里。
+                cancelled_part = Some(local_tmp.clone());
+                journal::mark(batch_id, &item.name, "failed");
+                break;
+            }
+        };
 
         // 先判 adb pull 本身，再判本地落地，错误信息不互相覆盖。
         let pull_err: Option<String> = match &pulled {
@@ -257,6 +375,7 @@ pub async fn pull_files(
                     file_name: item.name.clone(),
                     index,
                     total,
+                    percent: 100,
                     status: "done".to_string(),
                     error: None,
                 });
@@ -270,12 +389,19 @@ pub async fn pull_files(
                     file_name: item.name.clone(),
                     index,
                     total,
+                    percent: 0,
                     status: "error".to_string(),
                     error: Some(err),
                 });
             }
         }
     }
+
+    // 中止后删被打断文件的本地 .part（此时 pull future 已 drop、adb pull 已被 kill）。
+    if let Some(local_tmp) = cancelled_part {
+        let _ = tokio::fs::remove_file(&local_tmp).await;
+    }
+    cancel::unregister(progress_id);
 
     Ok(PullOutcome {
         saved_dir: save_dir.to_string_lossy().to_string(),
