@@ -14,11 +14,12 @@ use std::sync::OnceLock;
 
 use chrono::{Datelike, Local, NaiveDateTime};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// 一条解析后的日志（字段对齐 shared/types `LogEntry`，序列化 camelCase）。
 /// `timestamp` 发 ISO 字符串（前端 `new Date(log.timestamp)` 解析）。
-#[derive(Debug, Clone, Serialize, PartialEq)]
+/// 实现 Deserialize 以便 `export_logs` 接收前端回传的条目（timestamp 仍按字符串收）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub id: String,
@@ -57,6 +58,15 @@ struct Pending {
     level: String,
     tag: String,
     msg_lines: Vec<String>,
+}
+
+/// 一条日志格式化为可读文本（导出用）：`时间 级别/TAG (pid:tid): 消息`。
+/// 多行消息（堆栈）原样保留其换行——整条不拆。
+pub fn format_entry(e: &LogEntry) -> String {
+    format!(
+        "{} {}/{} ({}:{}): {}",
+        e.timestamp, e.level, e.tag, e.process_id, e.thread_id, e.message
+    )
 }
 
 /// 前端 level 联合类型只认 6 级；其余（含 logcat 的 'S' silent）归 'I' 兜底。

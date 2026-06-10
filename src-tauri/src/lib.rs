@@ -5,6 +5,7 @@
 
 mod adb;
 mod commands;
+mod logging;
 mod mirror;
 mod performance;
 mod runtime_root;
@@ -100,9 +101,10 @@ pub fn run() {
             commands::wake_device,
             commands::unlock_device,
             commands::reboot_device,
-            commands::export_logs,
-            commands::export_full_logs,
-            commands::export_full_logs_by_package,
+            // 日志导出（T4-5 真实现）
+            commands::logcat::export_logs,
+            commands::logcat::export_full_logs,
+            commands::logcat::export_full_logs_by_package,
             commands::get_runtime_root,
         ])
         .build(tauri::generate_context!())

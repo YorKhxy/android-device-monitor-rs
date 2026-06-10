@@ -19,6 +19,7 @@ use tokio::process::{Child, Command};
 
 use super::logcat_parser::{LogEntry, LogcatParser};
 use super::manager::exec_adb_capture;
+use crate::logging::full_log_recorder;
 
 const BATCH_MAX: usize = 200; // 单批上限，达到即 flush。
 const FLUSH_MS: u64 = 250; // 定时 flush 间隔（不足一批也按节奏推，保证实时性）。
@@ -42,7 +43,8 @@ fn next_id() -> u64 {
 
 /// 「相关日志」判定（纯函数，便于单测）：无 package 全收；有 package 时保留
 /// 应用自身（pid 命中）或系统侧提到包名（message/tag 含包名）的条目。命中应用自身的标记 packageName。
-fn filter_entry(mut entry: LogEntry, package: Option<&str>, pids: &HashSet<i64>) -> Option<LogEntry> {
+/// 复用于「按包名导出完整日志」（T4-5）。
+pub(crate) fn filter_entry(mut entry: LogEntry, package: Option<&str>, pids: &HashSet<i64>) -> Option<LogEntry> {
     let pkg = match package {
         None => return Some(entry), // 全局模式：不过滤。
         Some(p) => p,
@@ -59,7 +61,8 @@ fn filter_entry(mut entry: LogEntry, package: Option<&str>, pids: &HashSet<i64>)
 }
 
 /// 解析目标包当前 pid 集合（`pidof <pkg>` 返回空格分隔 pid；设备无 pidof / 未运行 → 空集，退化为仅文本匹配）。
-async fn resolve_pids(adb: &Path, device_id: &str, package: &str) -> HashSet<i64> {
+/// 复用于「按包名导出完整日志」（T4-5，导出时一次性解析当前 pid）。
+pub(crate) async fn resolve_pids(adb: &Path, device_id: &str, package: &str) -> HashSet<i64> {
     let out = exec_adb_capture(adb, &["-s", device_id, "shell", "pidof", package], 5_000).await;
     let mut set = HashSet::new();
     if let Ok(o) = out {
@@ -137,6 +140,9 @@ async fn reader_loop(
     let mut buffer: Vec<LogEntry> = Vec::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(FLUSH_MS));
 
+    // 完整日志录制（T4-5）：开流即 truncate 重建落盘文件，「从监控第一行」。失败不阻断抓取。
+    let _ = full_log_recorder::begin(&device_id, entry_id);
+
     // 相关日志 pid 集：种子用前端传入的 pid，随后周期性用 pidof 重解析。
     let mut pids: HashSet<i64> = HashSet::new();
     if let Some(p) = pid {
@@ -152,6 +158,8 @@ async fn reader_loop(
             line = lines.next_line() => {
                 match line {
                     Ok(Some(raw)) => {
+                        // 完整日志：每条原始行（过滤前、全等级）落盘，与推前端的「相关日志」无关。
+                        full_log_recorder::append(&device_id, entry_id, &raw);
                         if let Some(entry) = parser.push_line(&raw) {
                             if let Some(e) = filter_entry(entry, package.as_deref(), &pids) {
                                 buffer.push(e);
@@ -178,6 +186,7 @@ async fn reader_loop(
             }
             _ = ticker.tick() => {
                 flush(&app, &mut buffer);
+                full_log_recorder::flush(&device_id, entry_id); // 定时刷盘，保证导出拿到最新。
                 if let Some(pkg) = package.as_deref() {
                     if last_pid_refresh.elapsed().as_millis() >= PID_REFRESH_MS {
                         let mut fresh = resolve_pids(&adb, &device_id, pkg).await;
@@ -191,6 +200,9 @@ async fn reader_loop(
             }
         }
     }
+
+    // 完整日志录制收尾（id 比对，drop BufWriter 自动 flush）。
+    full_log_recorder::end(&device_id, entry_id);
 
     // 仅当注册表里仍是「本条」流时才清（id 比对，防误删已被 stop 后重启的同设备 live entry）。
     if let Ok(mut map) = streams().lock() {

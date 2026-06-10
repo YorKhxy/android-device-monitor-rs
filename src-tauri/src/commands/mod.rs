@@ -63,9 +63,7 @@ fn stub() -> Value {
 #[tauri::command] pub fn wake_device() -> Value { stub() }
 #[tauri::command] pub fn unlock_device() -> Value { stub() }
 #[tauri::command] pub fn reboot_device() -> Value { stub() }
-#[tauri::command] pub fn export_logs() -> Value { stub() }
-#[tauri::command] pub fn export_full_logs() -> Value { stub() }
-#[tauri::command] pub fn export_full_logs_by_package() -> Value { stub() }
+// export_logs / export_full_logs / export_full_logs_by_package 已由 commands::logcat 接管（T4-5）。
 
 // ——— 验证用：暴露运行时根目录，确认落盘锚点正确（不进 C 盘 userData）———
 #[tauri::command]
