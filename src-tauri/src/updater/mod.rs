@@ -10,7 +10,7 @@
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// check 拿到的待处理更新（download/install 复用）。
@@ -31,6 +31,62 @@ fn cached_status() -> &'static Mutex<Option<Value>> {
     S.get_or_init(|| Mutex::new(None))
 }
 
+/// 从 update-config.json 读取 {"url":"..."}（文件不存在/损坏/url 空 → None）。
+fn read_config_url(p: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_string))
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// 规范化为 latest.json 地址：填完整 latest.json URL 原样用，填基址（如 http://192.168.1.60:8384）自动补 /latest.json。
+fn normalize_endpoint(raw: &str) -> String {
+    let base = raw.trim().trim_end_matches('/');
+    if base.to_lowercase().ends_with(".json") {
+        base.to_string()
+    } else {
+        format!("{base}/latest.json")
+    }
+}
+
+/// 解析更新服务器地址（对齐老工具可配置 feed：避免写死 127.0.0.1 在别的机器上找不到服务器）。优先级：
+/// ① 环境变量 ADM_UPDATE_FEED_URL ② exe 同目录 update-config.json（运维手动覆盖，不重打包就能改服务器）
+/// ③ 资源目录 update-config.json（随安装包/热更落地的内置默认）④ None → 用 tauri.conf 内置 endpoint（127.0.0.1，仅本机）。
+fn resolve_endpoint(app: &AppHandle) -> Option<String> {
+    if let Ok(v) = std::env::var("ADM_UPDATE_FEED_URL") {
+        if !v.trim().is_empty() {
+            return Some(normalize_endpoint(&v));
+        }
+    }
+    let runtime_cfg = crate::runtime_root::resolve_runtime_app_root().join("update-config.json");
+    if let Some(u) = read_config_url(&runtime_cfg) {
+        return Some(normalize_endpoint(&u));
+    }
+    if let Ok(dir) = app.path().resource_dir() {
+        if let Some(u) = read_config_url(&dir.join("update-config.json")) {
+            return Some(normalize_endpoint(&u));
+        }
+    }
+    None
+}
+
+/// 构造 updater：有可配置 endpoint（环境变量 / exe 同目录 / 资源目录的 update-config.json）就用它，
+/// 否则用打包内置 endpoint（tauri.conf 的 127.0.0.1，仅本机测试用）。
+fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    match resolve_endpoint(app) {
+        Some(ep) => {
+            let url = url::Url::parse(&ep).map_err(|e| format!("更新地址非法（{ep}）：{e}"))?;
+            app.updater_builder()
+                .endpoints(vec![url])
+                .map_err(|e| e.to_string())?
+                .build()
+                .map_err(|e| e.to_string())
+        }
+        None => app.updater().map_err(|e| e.to_string()),
+    }
+}
+
 /// 写缓存 + 经 update_status event 推前端。
 fn emit_status(app: &AppHandle, status: Value) {
     if let Ok(mut s) = cached_status().lock() {
@@ -44,11 +100,11 @@ fn emit_status(app: &AppHandle, status: Value) {
 pub async fn check_for_update(app: AppHandle) -> Value {
     emit_status(&app, json!({ "state": "checking" }));
 
-    let updater = match app.updater() {
+    let updater = match build_updater(&app) {
         Ok(u) => u,
         Err(e) => {
-            emit_status(&app, json!({ "state": "error", "error": e.to_string() }));
-            return json!({ "success": false, "error": e.to_string() });
+            emit_status(&app, json!({ "state": "error", "error": e }));
+            return json!({ "success": false, "error": "无法初始化更新检查" });
         }
     };
 

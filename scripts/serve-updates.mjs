@@ -15,8 +15,16 @@
 
 import http from 'node:http';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// 本机所有非内部 IPv4（局域网地址）——客户端要把更新源指到这些地址之一，127.0.0.1 在别的机器上指向它自己。
+const lanIPv4s = () =>
+  Object.values(os.networkInterfaces())
+    .flat()
+    .filter((n) => n && n.family === 'IPv4' && !n.internal)
+    .map((n) => n.address);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -253,10 +261,20 @@ server.on('error', (e) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
+  const ips = lanIPv4s();
   console.log(`[serve-updates] 热更服务器已启动`);
   console.log(`  服务目录：${root}`);
   console.log(`  本机访问：http://127.0.0.1:${port}/latest.json`);
-  console.log(`  局域网访问：http://<本机局域网IP>:${port}/latest.json（客户端更新源指到此）`);
+  if (ips.length) {
+    console.log(`  局域网访问（别的机器用这个）：`);
+    for (const ip of ips) console.log(`    http://${ip}:${port}/latest.json`);
+    console.log('');
+    console.log(`  ⚠️ 别的机器点「检查更新」找不到服务器 → 在它的程序目录（exe 同目录）放一个 update-config.json：`);
+    console.log(`     { "url": "http://${ips[0]}:${port}" }`);
+    console.log(`     （客户端会据此把更新源指到本机；127.0.0.1 只能本机自己用。也可用环境变量 ADM_UPDATE_FEED_URL 覆盖。）`);
+  } else {
+    console.log(`  局域网访问：http://<本机局域网IP>:${port}/latest.json（未探测到局域网网卡）`);
+  }
   console.log(
     `  防滥用：每 IP/${RL_WINDOW_MS / 1000}s 检查≤${RL_MAX.check} 下载≤${RL_MAX.download}；` +
       `并发连接≤${MAX_CONN}，并发下载≤${MAX_DOWNLOADS}(单IP≤${MAX_DOWNLOADS_PER_IP})。`,

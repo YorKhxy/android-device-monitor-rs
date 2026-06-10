@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,6 +45,35 @@ function nextVersion(current) {
   if (bump === 'minor') return `${maj}.${min + 1}.0`;
   if (bump === 'patch') return `${maj}.${min}.${pat + 1}`;
   fail(`--bump 取值 patch|minor|major，收到：${bump}`);
+}
+
+// 本机非内部 IPv4（局域网地址）——客户端更新源要指到这里，127.0.0.1 在别的机器指向它自己。
+function lanIPv4s() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((n) => n && n.family === 'IPv4' && !n.internal)
+    .map((n) => n.address);
+}
+
+// 写 src-tauri/update-config.json（随包打进 resource，客户端首次安装/热更后自动落地，无需手动配）。
+// 地址优先用 --feed-url=，否则取本机局域网 IP + 默认端口 8384。返回写入的 base url。
+function writeUpdateConfig() {
+  const explicit = arg('feed-url');
+  let base;
+  if (explicit) {
+    base = explicit.trim().replace(/\/+$/, '');
+  } else {
+    const ips = lanIPv4s();
+    if (!ips.length) {
+      console.warn('   ⚠️ 未探测到局域网 IP，update-config.json 沿用现有内容（别的机器可能仍找不到服务器）。');
+      return null;
+    }
+    base = `http://${ips[0]}:8384`;
+  }
+  const p = path.join(SRC_TAURI, 'update-config.json');
+  fs.writeFileSync(p, JSON.stringify({ url: base }, null, 2) + '\n', 'utf8');
+  console.log(`   更新源已写入 update-config.json：${base}（随包打进客户端）`);
+  return base;
 }
 
 // 同步写三处版本号，保持一致。
@@ -108,39 +137,153 @@ function runNode(args, env) {
   if (r.status !== 0) fail(`命令失败（exit ${r.status}）：node ${args.join(' ')}`);
 }
 
-function main() {
+// —— 步骤进度 ——
+// 整体进度 = 已完成步数/总步数，体现在每步开始的「[n/N] ▶ 步骤名」与结束的「[n/N] ███░░ pct% ✓ 步骤名 · 耗时」。
+// 长任务（编译打包）用 runLive 显示「原地刷新的单行实时状态」（spinner + 已用时 + 当前动作），避免上千行编译
+// 输出把进度条冲烂；其余快步骤直接一行起一行收。这样既不刷屏乱，长步骤也有持续反馈，不再「卡着到完成才 0→100」。
+const PROGRESS = { total: 0, no: 0, label: '', stepStart: 0, t0: Date.now() };
+
+function setTotalSteps(n) { PROGRESS.total = n; }
+
+function bar(frac, width = 20) {
+  const fill = Math.max(0, Math.min(width, Math.round(frac * width)));
+  return '█'.repeat(fill) + '░'.repeat(width - fill);
+}
+
+function fmtDur(ms) {
+  const s = Math.round(ms / 1000);
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+}
+
+// 收尾上一步：打满到「本步完成」的整体进度 + 耗时。首步之前 no=0，无操作。
+function endStep() {
+  if (PROGRESS.no === 0) return;
+  const frac = PROGRESS.no / PROGRESS.total;
+  const pct = String(Math.round(frac * 100)).padStart(3);
+  console.log(`[${PROGRESS.no}/${PROGRESS.total}] ${bar(frac)} ${pct}%  ✓ ${PROGRESS.label} · ${fmtDur(Date.now() - PROGRESS.stepStart)}`);
+}
+
+// 开新一步：先收尾上一步，再打印本步起始行（不带 bar，避免与上一行同 % 重复看着乱）。
+function beginStep(label) {
+  endStep();
+  PROGRESS.no += 1;
+  PROGRESS.label = label;
+  PROGRESS.stepStart = Date.now();
+  console.log(`\n[${PROGRESS.no}/${PROGRESS.total}] ▶ ${label}`);
+}
+
+// 全部完成：收尾最后一步 + 总耗时。
+function finishSteps() {
+  endStep();
+  console.log(`\n✅ 全部完成 · 总耗时 ${fmtDur(Date.now() - PROGRESS.t0)}`);
+}
+
+// 跑长命令并显示实时进度。终端（cmd）里 \r 原地刷新不可靠，故不用 spinner 逐帧刷——改为
+// 「仅当动作变化（换了正在编译的 crate / 构建阶段）时才打一行」+ 每 8s 一次心跳（防长链接阶段看着卡死），
+// 并节流避免一堆小 crate 瞬间刷屏。详细输出默认隐藏，失败时吐尾部若干行定位。仅用于编译打包这类长任务。
+function runLive(commandString, env, label) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    let action = '启动中…';
+    let lastPrinted = '';
+    let lastPrintAt = 0;
+    const tail = [];
+    const child = spawn(commandString, { shell: true, cwd: ROOT, env });
+
+    const printLine = () => {
+      const now = Date.now();
+      const changed = action !== lastPrinted;
+      // 动作没变 → 仅到 8s 心跳才打；动作变了 → 至少隔 800ms 才打（小 crate 秒过时合并，不刷屏）。
+      if (!changed && now - lastPrintAt < 8000) return;
+      if (changed && now - lastPrintAt < 800) return;
+      console.log(`   ${label} · ${fmtDur(now - t0)} · ${action}`);
+      lastPrinted = action;
+      lastPrintAt = now;
+    };
+
+    const onData = (buf) => {
+      for (const ln of buf.toString().split(/\r?\n/)) {
+        const s = ln.trim();
+        if (!s) continue;
+        tail.push(s);
+        if (tail.length > 60) tail.shift();
+        const c = s.match(/Compiling\s+(\S+)/);
+        if (c) action = `编译 ${c[1]}`;
+        else if (/transforming|building for production|vite v/i.test(s)) action = '前端构建（vite）…';
+        else if (/Bundling|NSIS|Built application|Running bundling/i.test(s)) action = '打包安装器（NSIS）…';
+        else if (/Finished\s+`?release/i.test(s)) action = 'Rust 编译完成，收尾中…';
+      }
+      printLine();
+    };
+    // 心跳：即使没有新输出（如长时间 LTO 链接），每 8s 也报一次「还在干 + 已用时」。
+    const hb = setInterval(printLine, 8000);
+
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData); // cargo 进度多打到 stderr
+
+    child.on('error', (e) => { clearInterval(hb); reject(e); });
+    child.on('close', (code) => {
+      clearInterval(hb);
+      if (code !== 0) {
+        console.error(`\n—— 失败输出（尾部 ${tail.length} 行）——`);
+        console.error(tail.join('\n'));
+        reject(new Error(`命令失败（exit ${code}）：${commandString}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function main() {
   const current = JSON.parse(fs.readFileSync(path.join(SRC_TAURI, 'tauri.conf.json'), 'utf8')).version;
   const version = nextVersion(current);
   console.log(`=== 打热更包：${current} → ${version} ===`);
 
+  // 自动生成更新说明这一步是否执行 → 决定总步数，进度百分比才准确。
+  const autoNotes =
+    !process.argv.includes('--no-auto-notes') && !process.argv.some((a) => a.startsWith('--notes='));
+  // 固定步骤：读密钥 → 写版本 → 写更新源配置 → [生成说明] → 编译打包 → 整理产物 → 提交打 tag。
+  setTotalSteps(autoNotes ? 7 : 6);
+
+  beginStep('读取签名私钥');
   const { key, password } = readSigning();
   if (!password) {
     console.warn('⚠️ 未取到签名密码（password.txt / ADM_SIGN_PASSWORD 均空）——若密钥有密码会卡在解密提示。');
   }
 
+  beginStep('写入版本号 → tauri.conf.json / package.json / Cargo.toml');
   writeVersion(version);
-  console.log(`✓ 版本已写入 tauri.conf.json / package.json / Cargo.toml`);
+
+  // 写更新源配置（随包打进客户端，首次安装/热更后自动落地）——必须在 build 之前，才能被打进 resource。
+  beginStep('写入更新源配置 update-config.json（随包打进客户端）');
+  writeUpdateConfig();
 
   // 自动从 git 提交生成本次更新说明 → release-notes.md（make-update-package 会读它写进 latest.json）。
   // 指定 --notes 或 --no-auto-notes 时跳过；--notes 在 make-update-package 里优先级更高。
-  if (!process.argv.includes('--no-auto-notes') && !process.argv.some((a) => a.startsWith('--notes='))) {
+  if (autoNotes) {
+    beginStep('生成更新说明（汇总 git 提交）');
     runNode(['scripts/gen-release-notes.mjs'], process.env);
   }
 
+  beginStep('编译打包（npm run tauri build，最耗时）');
   const buildEnv = envWithCargo({
     TAURI_SIGNING_PRIVATE_KEY: key,
     TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password,
   });
-  sh('npm run tauri build', buildEnv);
+  await runLive('npm run tauri build', buildEnv, '编译打包');
 
   // 整理产物到 update-releases/（透传 --notes / --base）。
+  beginStep('整理热更产物 + 生成 latest.json');
   const passThrough = process.argv.filter((a) => a.startsWith('--notes=') || a.startsWith('--base='));
   runNode(['scripts/make-update-package.mjs', ...passThrough], process.env);
 
   // 发版锚点（对齐老工具）：提交版本号变更并打 tag v<版本>，作为下次自动 release notes 的起点。
   // 仅在确有版本号变更时提交；打包已成功，打 tag 出岔子不致命，吞掉即可。
+  beginStep('Git 提交版本号变更 + 打 tag');
   tagRelease(version);
 
+  finishSteps();
   console.log(`\n✅ 热更包 v${version} 完成。起服务：「启动热更服务器.bat」（npm run serve:updates）`);
 }
 
@@ -167,4 +310,4 @@ function tagRelease(version) {
   }
 }
 
-main();
+main().catch((e) => fail(e.message));

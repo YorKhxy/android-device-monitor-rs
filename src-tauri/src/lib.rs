@@ -25,6 +25,15 @@ pub fn run() {
         .setup(|app| {
             // 启动设备监控轮询，设备列表变化时 emit device_list_changed
             adb::monitor::start(app.handle().clone());
+            // 启动即静默检查一次更新（对齐老工具 whenReady → checkForUpdates）：结果经 update_status event +
+            // get_update_status 缓存推前端，「打开工具就提示有新版本」无需手动点。开发期跳过——无更新端点会报错刷屏。
+            #[cfg(not(debug_assertions))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = updater::check_for_update(handle).await;
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
