@@ -38,8 +38,13 @@
   - ✅ **T4-4 Logcat 流式抓取+解析+批量推送**（`adb/logcat_parser.rs` + `adb/logcat_stream.rs` + `commands/logcat.rs`）：流式 adb logcat -v long *:V、[头]起空行止切分+多行堆栈合并(LogEntry)、log_batch 批量推送(≤200/批 250ms 队列1000)、相关日志口径(pidof 周期解析 pid 命中 OR 文本提包名，前置限流)；恒 *:V minLevel 前端显示筛选；复用 pico_metrics_stream 常驻流范式 + kill_on_drop。commit `c042a26`，cargo test 35/35，两阶段 review 全 PASS。真机待验：多行堆栈整条 / 相关日志降噪 / 高频不卡 UI。
   - ✅ **T4-5 日志导出+完整日志录制**（`logging/full_log_recorder.rs` + `commands/logcat.rs`）：完整日志开流起每条原始行(过滤前/全等级)tee 落 exe 同目录 `device-logs/{sanitized}.log`（`runtime_root::device_logs_dir`，铁律），truncate-on-begin=「从监控第一行」，id 比对防 stop/restart 竞态；export_logs(格式化前端条目)/export_full_logs(另存落盘原始)/export_full_logs_by_package(重解析+pidof+相关过滤切子集，多行堆栈整条保留)。commit `c18f36a`，cargo test 37/37，两阶段 review 全 PASS。真机待验：完整日志落盘不进 C 盘 / 三导出文件 / 按包子集。
   - 📌 P4 真机验收清单：① 文件 强杀后续传 / 丢弃清残留 / 关界面续显；② Logcat 多行堆栈整条 / 相关日志降噪 / 高频不卡 UI；③ 完整日志落 device-logs 不进 C 盘 / export_logs / export_full_logs / 按包导出子集。
-- ⬜ **P5–P7**：弱网集成 / 打包热更 / 真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
-  - 📌 接续提示：P4 完成，下一步 **P5 弱网整形桌面集成**（`/dev-builder` 继续）。助手 APK 随包 + 安装、选目标应用、弱网参数+预设档位、启停(am 下发)、VPN 授权引导+状态、参数热更、实时流量曲线+CSV。详见 DEV-PLAN.md Phase 5（T5.1–T5.7）。
+- ⏭ **P5 弱网整形桌面集成（跳过，后补）**：用户决定先做 P6，P5 暂缓。需用户提供预编译助手 APK `pico-network-helper.apk` 放 `src-tauri/resources/`。详见 DEV-PLAN.md Phase 5（T5.1–T5.7）。
+- ✅ **P6 打包 + 热更 + 体积验证（完成，已推 origin/dev）**：commit `8ed957c`。
+  - **打包**：NSIS `installMode=both`（可选目录/不默认 C 盘）、`webviewInstallMode=embedBootstrapper`（兜老 Win10）。下载包 **17.5MB**、装后 **53.4MB**，静默安装冒烟过、实测 adb/scrcpy 资源齐全——远优于 ~45MB 目标（体积红利兑现）。
+  - **热更**：`tauri-plugin-updater 2` + `updater/mod.rs`（check/download/install/status/notes，手动触发、静默装、进度事件）；minisign 签名（**私钥 `src-tauri/.tauri-keys/adm-updater.key` 已 gitignore，密码 `admUpd2026`；私钥+密码是签名机密，丢了就没法签更新**）；`createUpdaterArtifacts` 产 `setup.exe`+`.sig`。
+  - **服务端**：`scripts/serve-updates.mjs`（latest.json+包分发、Range、限流、访问日志、路径穿越防护）+ `scripts/make-update-package.mjs`（签名清单生成）；`npm run serve:updates` / `npm run make:update`。
+  - 📌 待验：热更端到端真机（装 0.1.0 → 抬版本打 0.2.0 → 起 serve:updates → 点检查更新 → 签名校验/静默装/更新日志）。endpoint 现为 `127.0.0.1:8788` 占位，部署改内网。P5 助手 APK 待补。
+- ⬜ **P7**：真机全功能回归。**详见 [`DEV-PLAN.md`](./DEV-PLAN.md)**。
   - 📌 P6 打包前：收紧 CSP 时需把 `http://adm-media.localhost` 加进 `media-src`（回看视频协议）。
 
 ## ⏳ 待真机验收（回头补，验完逐条划掉）
