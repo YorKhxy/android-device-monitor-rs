@@ -140,6 +140,13 @@ export interface ApkInstallResult {
   output: string;
 }
 
+/** APK 安装实时进度（后端 push 设备端字节轮询 0-85% + pm install 85-100%）。 */
+export interface InstallProgress {
+  installId: string;            // 进度通道 id（多设备并行各自唯一），前端据此回填到对应进度条
+  percent: number;             // 0-100
+  phase: 'pushing' | 'installing';
+}
+
 export interface ActivityStackEntry {
   id: string;
   packageName: string;

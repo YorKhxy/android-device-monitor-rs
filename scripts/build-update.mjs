@@ -256,8 +256,9 @@ async function main() {
   writeVersion(version);
 
   // 写更新源配置（随包打进客户端，首次安装/热更后自动落地）——必须在 build 之前，才能被打进 resource。
+  // 返回的 feedBase 同时作为 latest.json 的下载基址，保证「检查 endpoint」与「下载 URL」同源（同一局域网 IP）。
   beginStep('写入更新源配置 update-config.json（随包打进客户端）');
-  writeUpdateConfig();
+  const feedBase = writeUpdateConfig();
 
   // 自动从 git 提交生成本次更新说明 → release-notes.md（make-update-package 会读它写进 latest.json）。
   // 指定 --notes 或 --no-auto-notes 时跳过；--notes 在 make-update-package 里优先级更高。
@@ -273,9 +274,14 @@ async function main() {
   });
   await runLive('npm run tauri build', buildEnv, '编译打包');
 
-  // 整理产物到 update-releases/（透传 --notes / --base）。
+  // 整理产物到 update-releases/。透传 --notes；下载基址用上面写 update-config.json 的同一个 feedBase
+  // （除非用户显式给了 --base），确保检查与下载同源、别的机器既查得到也下得动。
   beginStep('整理热更产物 + 生成 latest.json');
-  const passThrough = process.argv.filter((a) => a.startsWith('--notes=') || a.startsWith('--base='));
+  const userBase = process.argv.find((a) => a.startsWith('--base='));
+  const passThrough = [
+    ...process.argv.filter((a) => a.startsWith('--notes=')),
+    ...(userBase ? [userBase] : feedBase ? [`--base=${feedBase}`] : []),
+  ];
   runNode(['scripts/make-update-package.mjs', ...passThrough], process.env);
 
   // 发版锚点（对齐老工具）：提交版本号变更并打 tag v<版本>，作为下次自动 release notes 的起点。

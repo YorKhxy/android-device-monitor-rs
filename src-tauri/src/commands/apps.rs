@@ -211,13 +211,16 @@ pub async fn install_apk(
     device_id: String,
     apk_path: String,
     options: Option<InstallOptions>,
+    install_id: Option<String>,
 ) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
         None => return adb_not_found(),
         Some(p) => p,
     };
     let allow_downgrade = options.unwrap_or_default().allow_downgrade;
-    match install::install_apk(&adb, &device_id, &apk_path, allow_downgrade).await {
+    // 进度通道 id：前端传则用（多设备并行各自唯一），缺省退化为空（仍可装，只是无 per-item 进度）。
+    let install_id = install_id.unwrap_or_default();
+    match install::install_apk(&app, &adb, &device_id, &apk_path, allow_downgrade, &install_id).await {
         // data 形状对齐前端消费 result.data.output 与原版 ApkInstallResult { apkPath, output }。
         Ok(output) => json!({ "success": true, "data": { "apkPath": apk_path, "output": output } }),
         Err(e) => e.to_result(),

@@ -344,7 +344,8 @@ function SimpleApp() {
   const selectedDeviceRef = useRef<DeviceInfo | null>(null);
   const maxLogEntriesRef = useRef(MAX_LOG_ENTRIES);
   const batchUpdateSizeRef = useRef(BATCH_UPDATE_SIZE);
-  const apkInstallProgressTimersRef = useRef(new Map<string, number>());
+  // installId → 该安装对应的 (设备, 队列项)：把后端真实安装进度事件回填到正确的进度条。
+  const installProgressTargetsRef = useRef(new Map<string, { deviceId: string; itemId: string }>());
 
   const resetDeviceRuntimeState = useCallback(() => {
     setSelectedDevice(null);
@@ -399,34 +400,7 @@ function SimpleApp() {
     }));
   }, []);
 
-  const stopApkInstallProgressTimer = useCallback((itemId: string) => {
-    const timerId = apkInstallProgressTimersRef.current.get(itemId);
-    if (timerId !== undefined) {
-      window.clearInterval(timerId);
-      apkInstallProgressTimersRef.current.delete(itemId);
-    }
-  }, []);
-
-  const startApkInstallProgressTimer = useCallback((deviceId: string, itemId: string) => {
-    stopApkInstallProgressTimer(itemId);
-    const timerId = window.setInterval(() => {
-      updateDeviceApkInstallState(deviceId, previousState => ({
-        ...previousState,
-        queue: previousState.queue.map(item => {
-          if (item.id !== itemId || item.status !== 'installing') return item;
-          const nextProgress = item.progress < 70
-            ? item.progress + 6
-            : item.progress < 90
-              ? item.progress + 2
-              : item.progress < 96
-                ? item.progress + 0.5
-                : item.progress;
-          return { ...item, progress: Math.min(nextProgress, 96) };
-        }),
-      }));
-    }, 800);
-    apkInstallProgressTimersRef.current.set(itemId, timerId);
-  }, [stopApkInstallProgressTimer, updateDeviceApkInstallState]);
+  // 安装进度改由后端真实事件驱动（push 设备端字节轮询 0-85% + pm install 85-100%），见 onInstallProgress 订阅。
 
   const getLogState = useCallback((deviceId: string) => {
     let state = logStatesRef.current.get(deviceId);
@@ -658,6 +632,21 @@ function SimpleApp() {
             }
           }
         });
+        // APK 安装真实进度：后端 push 设备端字节轮询(0-85%) + pm install(85-100%) 经 install_progress 事件推来，
+        // 按 installId 找到对应 (设备, 队列项) 回填进度。Math.max 保证不回退（初始 8% 也不会被低值盖掉）。
+        const unsubscribeInstallProgress = window.electronAPI!.onInstallProgress?.((p) => {
+          const target = installProgressTargetsRef.current.get(p.installId);
+          if (!target) return;
+          updateDeviceApkInstallState(target.deviceId, (previousState) => ({
+            ...previousState,
+            queue: previousState.queue.map((q) =>
+              q.id === target.itemId && q.status === 'installing'
+                ? { ...q, progress: Math.max(q.progress, p.percent) }
+                : q
+            ),
+          }));
+        }) ?? (() => {});
+
         // 启动即拉取主进程已知的最近更新状态：补回 whenReady 那次自动检查因 push 早于本订阅而丢失的提示，
         // 实现「打开工具就自动提示有新版本」，无需手动点「检查更新」。后台拉取，不走手动反馈（不弹「已是最新」）。
         void window.electronAPI!.getUpdateStatus?.().then((res) => {
@@ -711,13 +700,13 @@ function SimpleApp() {
           unsubscribeCaptureSample();
           unsubscribeCaptureSizeLimit();
           unsubscribeUpdateStatus();
+          unsubscribeInstallProgress();
           logStatesRef.current.forEach(state => {
             if (state.flushTimer !== null) {
               window.clearTimeout(state.flushTimer);
             }
           });
-          apkInstallProgressTimersRef.current.forEach(timerId => window.clearInterval(timerId));
-          apkInstallProgressTimersRef.current.clear();
+          installProgressTargetsRef.current.clear();
         };
       }
       setAppReady(true); // 无 Electron（纯网页环境）也放开操作
@@ -1630,10 +1619,12 @@ function SimpleApp() {
           q.id === item.id ? { ...q, status: 'installing', progress: Math.max(q.progress, 8), error: undefined, output: undefined } : q
         ),
       }));
-      startApkInstallProgressTimer(deviceId, item.id);
+      // 唯一进度通道 id：同一 APK 装到多台设备并行时各自独立，后端进度事件据此回填到正确的进度条。
+      const installId = `${deviceId}::${item.id}::${startedAt}`;
+      installProgressTargetsRef.current.set(installId, { deviceId, itemId: item.id });
       try {
-        const result = await window.electronAPI!.installApk(deviceId, item.path, { allowDowngrade: installAllowDowngrade });
-        stopApkInstallProgressTimer(item.id);
+        const result = await window.electronAPI!.installApk(deviceId, item.path, { allowDowngrade: installAllowDowngrade }, installId);
+        installProgressTargetsRef.current.delete(installId);
         const failMsg = result.success ? undefined : formatOperationError(result, '安装失败');
         // 进度卡只存「一句话原因」（result.error 的标题，不含建议/adb 原文）；完整详情交给下方安装日志，避免两处重复。
         updateDeviceApkInstallState(deviceId, (previousState) => ({
@@ -1660,7 +1651,7 @@ function SimpleApp() {
           );
         }
       } catch (err) {
-        stopApkInstallProgressTimer(item.id);
+        installProgressTargetsRef.current.delete(installId);
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
         const msg = (err as Error).message;
         updateDeviceApkInstallState(deviceId, (previousState) => ({

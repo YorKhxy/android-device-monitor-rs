@@ -3,13 +3,38 @@
 
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use regex::Regex;
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use super::error::AdbError;
 use super::manager::{exec_adb_capture, Captured};
 
 const INSTALL_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
+/// 安装实时进度（推送占 0-85%、pm install 占 85-100%）。经 install_progress event 推前端进度条。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallProgress {
+    install_id: String,
+    percent: u32,
+    phase: String, // "pushing" | "installing"
+}
+
+fn emit_progress(app: &AppHandle, install_id: &str, percent: u32, phase: &str) {
+    let _ = app.emit(
+        "install_progress",
+        InstallProgress { install_id: install_id.to_string(), percent, phase: phase.to_string() },
+    );
+}
+
+/// 仅保留字母数字与连字符，作设备端临时文件名片段——install_id 来自前端，防混入空格/元字符破坏 shell 命令。
+fn safe_id(install_id: &str) -> String {
+    let s: String = install_id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    if s.is_empty() { "x".to_string() } else { s }
+}
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("内置正则应当合法"))
@@ -33,28 +58,21 @@ fn basename(apk_path: &str) -> String {
         .unwrap_or_else(|| apk_path.to_string())
 }
 
-/// 是否值得退回 `--no-streaming` 重试（对齐原 shouldRetryInstallWithoutStreaming）。
-/// 退出码 0 视为成功，不重试；否则看输出是否含流式安装相关的失败特征。
-fn should_retry_without_streaming(result: &Captured) -> bool {
-    if result.success {
-        return false;
-    }
-    let output = format!("{}\n{}", result.stdout, result.stderr).to_lowercase();
-    output.contains("streamed install")
-        || output.contains("streaming")
-        || output.contains("broken pipe")
-        || output.contains("connection reset")
-        || output.contains("unexpected eof")
-        || output.contains("protocol fault")
-}
-
-/// 安装一个 APK 到一台设备。成功返回 adb 输出；失败返回分类后的 AdbError。
+/// 安装一个 APK 到一台设备，**带真实进度**。成功返回 pm 输出；失败返回分类后的 AdbError。
+///
+/// 做法（超过老工具的「adb install 一把跑完无进度」）：
+///   ① adb push 到设备临时目录 `/data/local/tmp/adm-install-<id>.apk`，期间每 400ms 轮询设备端已写字节算实时
+///      百分比（占 0-85%，大 APK 的耗时主要在这一段，与文件上传同款轮询）；
+///   ② `adb shell pm install -r [-d] <临时路径>` 真正安装（占 85-100%）；③ 删临时文件。
+/// 不再走流式 `adb install`，自然规避原 `--no-streaming` 退避要处理的流式中断问题。
 /// `-r` 重装保留数据；`allow_downgrade` 时叠加 `-d` 允许版本降级覆盖。
 pub async fn install_apk(
+    app: &AppHandle,
     adb: &Path,
     device_id: &str,
     apk_path: &str,
     allow_downgrade: bool,
+    install_id: &str,
 ) -> Result<String, AdbError> {
     let cleaned = apk_path.trim();
     if !cleaned.to_lowercase().ends_with(".apk") {
@@ -66,37 +84,58 @@ pub async fn install_apk(
         ));
     }
 
-    let flags: &[&str] = if allow_downgrade { &["-r", "-d"] } else { &["-r"] };
-    let mut primary_args: Vec<&str> = vec!["-s", device_id, "install"];
-    primary_args.extend_from_slice(flags);
-    primary_args.push(cleaned);
+    let remote = format!("/data/local/tmp/adm-install-{}.apk", safe_id(install_id));
+    let total_bytes = std::fs::metadata(cleaned).map(|m| m.len()).unwrap_or(0);
+    emit_progress(app, install_id, 0, "pushing");
 
-    let primary = exec_adb_capture(adb, &primary_args, INSTALL_TIMEOUT_MS).await?;
-    let primary_output = combine(&primary);
-    if is_success(&primary_output) {
-        return Ok(primary_output);
-    }
-
-    // 流式安装失败特征 → 退回 --no-streaming 再试一次。
-    if should_retry_without_streaming(&primary) {
-        let mut fallback_args: Vec<&str> = vec!["-s", device_id, "install", "--no-streaming"];
-        fallback_args.extend_from_slice(flags);
-        fallback_args.push(cleaned);
-
-        let fallback = exec_adb_capture(adb, &fallback_args, INSTALL_TIMEOUT_MS).await?;
-        let fallback_output = combine(&fallback);
-        if is_success(&fallback_output) {
-            return Ok(fallback_output);
+    // ① push 到设备临时目录，轮询字节算实时 %（占 0-85%）。push future 与轮询并发，stat 不阻断传输。
+    let push_args: [&str; 5] = ["-s", device_id, "push", cleaned, &remote];
+    let push_fut = exec_adb_capture(adb, &push_args, INSTALL_TIMEOUT_MS);
+    tokio::pin!(push_fut);
+    let pushed = loop {
+        tokio::select! {
+            res = &mut push_fut => break res,
+            _ = tokio::time::sleep(Duration::from_millis(400)), if total_bytes > 0 => {
+                if let Ok(out) = exec_adb_capture(adb, &["-s", device_id, "shell", "stat", "-c", "%s", &remote], 5_000).await {
+                    if out.success {
+                        if let Ok(written) = out.stdout.trim().parse::<u64>() {
+                            if written > 0 {
+                                let pct = (written.saturating_mul(85) / total_bytes).min(85) as u32;
+                                emit_progress(app, install_id, pct, "pushing");
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let failure = if !fallback_output.is_empty() {
-            fallback_output
-        } else {
-            primary_output
-        };
-        return Err(classify_install_failure(&failure, cleaned));
+    };
+
+    let pushed = pushed?;
+    if !pushed.success {
+        let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+        return Err(classify_install_failure(&combine(&pushed), cleaned));
     }
 
-    Err(classify_install_failure(&primary_output, cleaned))
+    // ② pm install（占 85-100%）。pm 失败时退出码仍可能为 0 并打印 "Failure [...]"，故按输出文本判据。
+    emit_progress(app, install_id, 88, "installing");
+    let mut pm_args: Vec<&str> = vec!["-s", device_id, "shell", "pm", "install", "-r"];
+    if allow_downgrade {
+        pm_args.push("-d");
+    }
+    pm_args.push(&remote);
+    let pm = exec_adb_capture(adb, &pm_args, INSTALL_TIMEOUT_MS).await;
+
+    // ③ 清设备端临时 APK（无论成败）。
+    let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+
+    let pm = pm?;
+    let output = combine(&pm);
+    if is_success(&output) {
+        emit_progress(app, install_id, 100, "installing");
+        Ok(output)
+    } else {
+        Err(classify_install_failure(&output, cleaned))
+    }
 }
 
 /// 把安装失败输出分类为带可读消息 + 建议的 AdbError（对齐原 classifyInstallFailure）。

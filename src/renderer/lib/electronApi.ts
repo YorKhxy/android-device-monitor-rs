@@ -28,6 +28,7 @@ import type {
   TransferResumeBatch,
   TransferBatchResult,
   UpdateStatus,
+  InstallProgress,
 } from '../../shared/types';
 
 export type ElectronResult<T> = {
@@ -81,7 +82,8 @@ export interface ElectronAPI {
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => () => void;
   onMirrorStatus: (callback: (session: MirrorSession) => void) => () => void;
   selectApkFiles: () => Promise<ElectronResult<string[]>>;
-  installApk: (deviceId: string, apkPath: string, options?: { allowDowngrade?: boolean }) => Promise<ElectronResult<ApkInstallResult>>;
+  installApk: (deviceId: string, apkPath: string, options?: { allowDowngrade?: boolean }, installId?: string) => Promise<ElectronResult<ApkInstallResult>>;
+  onInstallProgress: (callback: (progress: InstallProgress) => void) => () => void;
   uninstallApp: (deviceId: string, packageName: string) => Promise<ElectronResult<{ packageName: string; output: string }>>;
   listInstalledPackages: (deviceId: string) => Promise<ElectronResult<string[]>>;
   installWeakNetHelper: (deviceId: string) => Promise<ElectronResult<{ output: string }>>;

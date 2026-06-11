@@ -9,8 +9,17 @@
 // 用法：node scripts/make-update-package.mjs [--notes="本次说明"] [--base=http://内网IP:8384]
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// 本机非内部 IPv4（局域网地址）——latest.json 的下载 URL 要指到这里，127.0.0.1 在别的机器上指向它自己下不动。
+function lanIPv4s() {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((n) => n && n.family === 'IPv4' && !n.internal)
+    .map((n) => n.address);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -75,7 +84,10 @@ function findArtifacts(version) {
 function main() {
   const version = readVersion();
   const notes = readNotes(version);
-  const base = (arg('base') || process.env.UPDATE_BASE_URL || 'http://127.0.0.1:8384').replace(/\/+$/, '');
+  // 下载基址优先级：--base= / 环境变量 → 本机局域网 IP（默认端口 8384）→ 兜底 127.0.0.1（仅本机能下）。
+  // 必须与 update-config.json 的检查 endpoint 同源，否则会出现「检查到新版但下载走 127.0.0.1 下不动」。
+  const lan = lanIPv4s();
+  const base = (arg('base') || process.env.UPDATE_BASE_URL || (lan.length ? `http://${lan[0]}:8384` : 'http://127.0.0.1:8384')).replace(/\/+$/, '');
   const { pkg, sig } = findArtifacts(version);
   const signature = fs.readFileSync(path.join(NSIS_DIR, sig), 'utf8').trim();
 
