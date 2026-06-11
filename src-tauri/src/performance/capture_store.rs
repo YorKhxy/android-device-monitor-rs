@@ -110,7 +110,11 @@ pub async fn write_manifest(session_id: &str, session: &CaptureSession) -> Resul
     );
     tokio::fs::write(&path, body)
         .await
-        .map_err(|e| err("写入会话清单失败", "检查运行时目录写权限。", e.to_string()))
+        .map_err(|e| err(
+            "写入会话清单失败：程序所在目录不可写",
+            "工具可能装在了 C:\\Program Files 等只读目录。请改用绿色便携包，或把工具装到可写目录（建议非系统盘）。",
+            e.to_string(),
+        ))
 }
 
 async fn read_manifest(session_id: &str) -> Result<CaptureSession, AdbError> {
@@ -150,7 +154,12 @@ pub async fn create_session(input: CreateSessionInput) -> Result<CaptureSession,
     for dir in [video_dir(&id)?, data_dir(&id)?, screenshot_dir(&id)?] {
         tokio::fs::create_dir_all(&dir)
             .await
-            .map_err(|e| err("创建会话目录失败", "检查运行时根目录写权限。", e.to_string()))?;
+            .map_err(|e| err(
+                "创建采集会话失败：程序所在目录不可写",
+                "工具可能装在了 C:\\Program Files 等只读目录。请改用绿色便携包，或把工具重装/解压到可写目录\
+                 （建议非系统盘，如 D:\\AndroidDeviceMonitor）——采集录像/数据都落在程序所在目录，需要写权限。",
+                e.to_string(),
+            ))?;
     }
 
     let session = CaptureSession {
