@@ -130,7 +130,7 @@ fn check_soft_limit(
 
 /// 开始采集：建会话 → 启动录制（失败则 finalize failed 并返回）→ 启动每秒采样 tick → 登记 active。
 /// record_audio：用户开「录制设备声音」时为 true，且设备 A13+ 时走 scrcpy 含音录制，否则降级无声 screenrecord。
-pub async fn start(app: &AppHandle, device_id: &str, record_audio: bool) -> Result<CaptureSession, AdbError> {
+pub async fn start(app: &AppHandle, device_id: &str, record_audio: bool, bit_rate_mbps: Option<u32>) -> Result<CaptureSession, AdbError> {
     if is_active(device_id) {
         return Err(err("当前设备已在采集中。", "请先关闭当前采集，再开始新的采集。"));
     }
@@ -218,7 +218,7 @@ pub async fn start(app: &AppHandle, device_id: &str, record_audio: bool) -> Resu
         StartCaptureInput {
             device_id: device_id.to_string(),
             video_dir: video,
-            bit_rate_mbps: None,
+            bit_rate_mbps,
             events: tx,
             backend,
         },

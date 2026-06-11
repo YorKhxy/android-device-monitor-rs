@@ -76,13 +76,15 @@ pub async fn get_activity_stack(
 // ——— 采集会话（T2.6）———
 
 /// 开始采集（采样 + 录制同时启动）。record_audio：是否录制设备声音（A13+ 走 scrcpy 含音录制，否则降级无声）。
+/// bit_rate_mbps：录制清晰度档位的目标码率（Mbps，决定体积≈码率×7.5 MB/分；缺省走录制器默认 8）。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn start_capture_session(
     app: AppHandle,
     device_id: String,
     record_audio: Option<bool>,
+    bit_rate_mbps: Option<u32>,
 ) -> Value {
-    match capture_controller::start(&app, &device_id, record_audio.unwrap_or(false)).await {
+    match capture_controller::start(&app, &device_id, record_audio.unwrap_or(false), bit_rate_mbps).await {
         Ok(session) => json!({ "success": true, "data": session }),
         Err(e) => e.to_result(),
     }

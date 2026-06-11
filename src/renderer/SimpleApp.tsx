@@ -224,6 +224,8 @@ function SimpleApp() {
   const [captureBusyDeviceIds, setCaptureBusyDeviceIds] = useState<Set<string>>(() => new Set());
   // 「录制设备声音」开关（按设备）：开启且设备 A13+ 时采集走含音录制（T2.10）。
   const [recordAudioByDeviceId, setRecordAudioByDeviceId] = useState<Record<string, boolean>>({});
+  // 录制清晰度档位目标码率（按设备，Mbps）。默认 8（高清，体积≈60 MB/分）；采集前可选省空间/标准等档降体积。
+  const [captureBitRateByDeviceId, setCaptureBitRateByDeviceId] = useState<Record<string, number>>({});
   const [captureElapsedByDeviceId, setCaptureElapsedByDeviceId] = useState<Record<string, number>>({});
   const [softLimitNoticeByDeviceId, setSoftLimitNoticeByDeviceId] = useState<Record<string, string>>({});
   // 采集回看：归档会话列表（倒序）+ 当前在报告区展示的会话明细（停止采集后或点列表加载）。
@@ -1353,7 +1355,7 @@ function SimpleApp() {
           delete next[deviceId];
           return next;
         });
-        const result = await window.electronAPI!.startCaptureSession(deviceId, !!recordAudioByDeviceId[deviceId]);
+        const result = await window.electronAPI!.startCaptureSession(deviceId, !!recordAudioByDeviceId[deviceId], captureBitRateByDeviceId[deviceId] ?? 8);
         if (result.success && result.data) {
           const session = result.data;
           setActiveCaptureByDeviceId((prev) => ({ ...prev, [deviceId]: session }));
@@ -3616,6 +3618,8 @@ function SimpleApp() {
                     onToggleCapture={toggleCaptureSession}
                     recordAudio={Boolean(selectedDeviceId && recordAudioByDeviceId[selectedDeviceId])}
                     onToggleRecordAudio={(next) => selectedDeviceId && setRecordAudioByDeviceId((prev) => ({ ...prev, [selectedDeviceId]: next }))}
+                    captureBitRate={(selectedDeviceId && captureBitRateByDeviceId[selectedDeviceId]) || 8}
+                    onCaptureBitRateChange={(mbps) => selectedDeviceId && setCaptureBitRateByDeviceId((prev) => ({ ...prev, [selectedDeviceId]: mbps }))}
                     onDismissSoftLimit={() => selectedDeviceId && dismissSoftLimit(selectedDeviceId)}
                     onSaveCaptureMarkers={saveCaptureMarkers}
                     onSaveCaptureFrame={saveCaptureFrame}

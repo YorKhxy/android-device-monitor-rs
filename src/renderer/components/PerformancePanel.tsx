@@ -30,6 +30,9 @@ type PerformancePanelProps = {
   /** 录制设备声音开关（含音采集，仅设备 A13+ 支持）。 */
   recordAudio: boolean;
   onToggleRecordAudio: (next: boolean) => void;
+  /** 录制清晰度档位目标码率（Mbps，决定体积≈码率×7.5 MB/分）。 */
+  captureBitRate: number;
+  onCaptureBitRateChange: (mbps: number) => void;
   onDismissSoftLimit: () => void;
   onSaveCaptureMarkers: (sessionId: string, markers: PerformanceCaptureMarker[]) => void;
   onSaveCaptureFrame: (sessionId: string, dataUrl: string) => Promise<string | undefined>;
@@ -107,6 +110,15 @@ const isLikelyPicoDevice = (device: DeviceInfo | null) => {
   return identity.includes('pico') || identity.includes('a9210') || identity.includes('sparrow');
 };
 
+// 录制清晰度档位：码率直接决定体积（screenrecord -b 目标码率，文件≈码率×7.5 MB/分）。
+// perMin 为每分钟大致体积参考；高码率更清晰但更占空间，低码率省空间但画面更糊。
+export const CAPTURE_QUALITY_PRESETS = [
+  { label: '省空间', mbps: 2, perMin: '≈15 MB/分' },
+  { label: '标准', mbps: 4, perMin: '≈30 MB/分' },
+  { label: '高清', mbps: 8, perMin: '≈60 MB/分' },
+  { label: '超清', mbps: 16, perMin: '≈120 MB/分' },
+] as const;
+
 export function PerformancePanel({
   device,
   performance,
@@ -123,6 +135,8 @@ export function PerformancePanel({
   onToggleCapture,
   recordAudio,
   onToggleRecordAudio,
+  captureBitRate,
+  onCaptureBitRateChange,
   onDismissSoftLimit,
   onSaveCaptureMarkers,
   onSaveCaptureFrame,
@@ -230,6 +244,34 @@ export function PerformancePanel({
               <span style={{ color: 'var(--fg-tertiary)' }}>（该设备不支持，需 Android 13+）</span>
             )}
           </label>
+          {/* 录制清晰度档位：采集前选，码率越低越省空间。采集中不可改（与录音开关同 lock）。 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '12px', color: 'var(--fg-secondary)', opacity: audioToggleLocked ? 0.6 : 1 }}>
+            <span style={{ flexShrink: 0 }}>清晰度</span>
+            <div style={{ display: 'inline-flex', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-sm)', overflow: 'hidden' }}>
+              {CAPTURE_QUALITY_PRESETS.map((p, i) => {
+                const active = captureBitRate === p.mbps;
+                const locked = isCapturing || isCaptureBusy;
+                return (
+                  <button
+                    key={p.mbps}
+                    type="button"
+                    onClick={() => { if (!locked) onCaptureBitRateChange(p.mbps); }}
+                    disabled={locked}
+                    title={`${p.label} · ${p.mbps} Mbps · ${p.perMin}`}
+                    style={{
+                      padding: '4px 10px', fontSize: '12px', cursor: locked ? 'not-allowed' : 'pointer',
+                      border: 'none', borderLeft: i === 0 ? 'none' : '1px solid var(--border-subtle)',
+                      backgroundColor: active ? 'var(--accent)' : 'transparent',
+                      color: active ? '#fff' : 'var(--fg-secondary)', whiteSpace: 'nowrap',
+                    }}
+                  >{p.label}</button>
+                );
+              })}
+            </div>
+            <span style={{ color: 'var(--fg-tertiary)', flexShrink: 0 }}>
+              {CAPTURE_QUALITY_PRESETS.find((p) => p.mbps === captureBitRate)?.perMin ?? ''}
+            </span>
+          </div>
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
             <button
               onClick={onToggleCapture}

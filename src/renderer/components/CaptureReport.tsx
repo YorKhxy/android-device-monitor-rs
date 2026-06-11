@@ -48,6 +48,10 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   const [volume, setVolume] = useState(1);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingSeekOffsetRef = useRef<number | null>(null);
+  // 视频全屏：全屏目标是「视频盒子 + 播放控制栏」整块（playerRef），全屏时控件仍可见可操作。
+  // ESC 由浏览器原生退出，另提供控制栏按钮 + 全屏右上角悬浮按钮进/退。
+  const playerRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   // markers prop 可能每次渲染换新引用；只在切会话时播种，故经 ref 读取避免反复复位过滤态。
   const markersPropRef = useRef(markers);
   markersPropRef.current = markers;
@@ -93,6 +97,22 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     v.muted = muted;
     v.volume = volume;
   }, [muted, volume, activeSegmentIndex, hasAudio]);
+
+  // 同步全屏态：用户按 ESC / 系统退出全屏时也要把按钮图标切回来（fullscreenchange 覆盖所有退出途径）。
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === playerRef.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  // 进/退全屏：未全屏 → 让视频盒子进全屏；已全屏 → 退出。失败（webview 不支持等）静默忽略。
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+    } else {
+      void playerRef.current?.requestFullscreen().catch(() => {});
+    }
+  };
 
   // PC 键盘 ← / → 控制时间轴：左后退、右前进，按住 Shift 大步(5s)否则 1s。
   // 焦点在输入框/文本域/下拉/可编辑元素时不抢方向键；采集中(live)或无时长时不响应。
@@ -256,11 +276,20 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     const singleEyeRatio = videoSize
       ? `${Math.max(1, Math.floor(videoSize.width / 2))} / ${Math.max(1, videoSize.height)}`
       : undefined;
-    const videoBoxStyle: CSSProperties = useCropFill
+    // 全屏态：盒子用 flex:1 撑满外层留给视频的空间（控制栏在底部），video objectFit:contain 居中铺满。
+    const videoBoxStyle: CSSProperties = isFullscreen
+      ? { position: 'relative', flex: 1, minHeight: 0, width: '100%', backgroundColor: 'var(--bg-mirror)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }
+      : useCropFill
       ? { position: 'relative', width: '100%', aspectRatio: singleEyeRatio, borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-mirror)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }
       : { position: 'relative', height: `${REPORT_HEIGHT}px`, borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-mirror)', border: '1px solid var(--border-subtle)', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' };
     return (
-      <div>
+      // 全屏目标：视频盒子 + 控制栏整块。全屏时排成列、填满整屏、视频区占满、控制栏贴底。
+      <div
+        ref={playerRef}
+        style={isFullscreen
+          ? { display: 'flex', flexDirection: 'column', width: '100%', height: '100%', backgroundColor: '#000', padding: '12px', boxSizing: 'border-box' }
+          : undefined}
+      >
         {/* 单眼裁切按宽度等比放大填充（hxy0601 功能），盒子配色用设计系统 token（ui-fresh 口径）。 */}
         <div style={videoBoxStyle}>
           <video
@@ -278,6 +307,24 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
               : { width: '100%', height: '100%', objectFit: 'contain', backgroundColor: 'var(--bg-mirror)', opacity: shouldCrop ? 0 : 1 }}
           />
           {renderMetricOverlay(currentSample)}
+          {/* 全屏时右上角悬浮「退出全屏」按钮（鼠标退出途径；ESC 亦可）。仅全屏态显示。 */}
+          {isFullscreen && (
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              aria-label="退出全屏"
+              data-tip="退出全屏（ESC）"
+              style={{
+                position: 'absolute', top: '16px', right: '16px', zIndex: 5,
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '8px 12px', borderRadius: '8px', cursor: 'pointer',
+                backgroundColor: 'rgba(0,0,0,0.55)', color: '#fff', border: '1px solid rgba(255,255,255,0.25)',
+                fontSize: '13px', backdropFilter: 'blur(2px)',
+              }}
+            >
+              <Icon name="minimize" size={16} />退出全屏
+            </button>
+          )}
         </div>
         {/* 可拖动时间轴：播放头横跨整条逻辑轴，分段在轴上以刻度分隔。 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '10px' }}>
@@ -302,6 +349,14 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
           <div style={{ color: 'var(--fg-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
             {formatClock(playheadMs)} / {formatClock(totalMs)}
           </div>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="btn secondary sm iconbtn"
+            aria-label={isFullscreen ? '退出全屏' : '全屏'}
+            data-tip={isFullscreen ? '退出全屏（ESC）' : '全屏观看'}
+            style={{ flexShrink: 0 }}
+          ><Icon name={isFullscreen ? 'minimize' : 'maximize'} /></button>
           {hasAudio && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
               <button
