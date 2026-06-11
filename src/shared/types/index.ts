@@ -189,6 +189,23 @@ export interface AndroidPerformancePayload {
 export type PicoMetricsState = 'native' | 'fallback' | 'unavailable';
 export type PicoAppSupportStatus = 'supported' | 'unsupported' | 'unknown';
 
+/** 单拍帧耗时统计（gfxinfo framestats 每帧 FrameCompleted-IntendedVsync 聚合，单位 ms）：
+ *  比单一平均 FPS 更能看清「卡不卡、多狠」——分位看长尾（p99 抓偶发大卡顿）、jank% 看掉帧密度。
+ *  jank = 单帧耗时 > budgetMs（=1000/刷新率，没能在自己 vsync 间隔内做完 → 掉帧）。取不到为 undefined。 */
+export interface FrameTimingStats {
+  frameCount: number;   // 本拍纳入统计的有效帧数（Flags=0 的正常帧）
+  avgMs: number;
+  p50Ms: number;
+  p90Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  maxMs: number;
+  jankCount: number;    // 耗时 > budgetMs 的帧数
+  jankPercent: number;  // jankCount / frameCount * 100
+  budgetMs: number;     // 判定 jank 的帧预算 = 1000/refreshHz
+  refreshHz: number;    // 采用的设备刷新率（dumpsys display 探测，未知回退 60）
+}
+
 /** App 分类内存（dumpsys meminfo App Summary，单位 KB）：定位内存涨在哪一类。 */
 export interface MemoryBreakdown {
   javaKb: number;      // Java/托管堆（脚本对象）
@@ -208,6 +225,8 @@ export interface PerformanceMetrics {
   batteryLevel?: number;
   /** 分类内存（dumpsys meminfo 前台包 App Summary，单位 KB）：定位内存涨在哪一类。取不到为 undefined。 */
   memoryBreakdown?: MemoryBreakdown;
+  /** 帧耗时统计（gfxinfo framestats 每帧耗时聚合）：分位 + jank% 看卡顿分布与长尾。取不到为 undefined。 */
+  frameTiming?: FrameTimingStats;
   packageName?: string;
   activityName?: string;
   androidMetrics?: AndroidPerformancePayload;

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
-import { formatMemoryMb, getGpuValue, METRIC_COLORS, sampleElapsedMs, type CaptureMetricKey } from './perfFormat';
+import { CHART_PAD_X, formatMemoryMb, getGpuValue, METRIC_COLORS, sampleElapsedMs, type CaptureMetricKey } from './perfFormat';
 
 // 图表主题统一走 design token（SVG 的 fill/stroke/background 均接受 var()）。
 const THEME = {
@@ -11,7 +11,8 @@ const THEME = {
   playhead: 'var(--accent)',
 };
 
-const chartPadding = { left: 50, right: 70, top: 22, bottom: 36 };
+// 左右用三图共享的 X 边距（对齐时间轴）；上下为本图自有（顶部留 playhead 箭头，底部留图例）。
+const chartPadding = { left: CHART_PAD_X.left, right: CHART_PAD_X.right, top: 22, bottom: 36 };
 
 type ChartSeries = {
   key: string;

@@ -6,7 +6,9 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::runtime_types::{ActivityStackEntry, ForegroundAppContext, MemoryBreakdown, ProcessInfo};
+use super::runtime_types::{
+    ActivityStackEntry, ForegroundAppContext, FrameTimingStats, MemoryBreakdown, ProcessInfo,
+};
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("内置正则应当合法"))
@@ -208,6 +210,129 @@ fn parse_legacy_fps(output: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+/// 从 gfxinfo framestats 解析每帧总耗时（ms）= (FrameCompleted - IntendedVsync)/1e6。
+/// 取所有 PROFILEDATA 段、所有 Flags=0 的有效帧（Flags!=0 是 AOSP 标记应剔除的帧，如首帧/异常帧）。
+/// 与 parse_frame_stats_fps 的列定位口径一致，但这里收集全部帧的耗时（供分位/jank/直方统计），不止最近 60。
+pub fn parse_frame_durations_ms(output: &str) -> Vec<f64> {
+    let mut durations = Vec::new();
+    for section in output.split("---PROFILEDATA---").skip(1) {
+        let lines: Vec<&str> = section
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        let header_index = match lines.iter().position(|l| l.starts_with("Flags,")) {
+            Some(i) => i,
+            None => continue,
+        };
+        let header: Vec<&str> = lines[header_index].split(',').collect();
+        let flags_idx = header.iter().position(|h| *h == "Flags");
+        let intended_idx = header.iter().position(|h| *h == "IntendedVsync");
+        let completed_idx = header.iter().position(|h| *h == "FrameCompleted");
+        let (intended_idx, completed_idx) = match (intended_idx, completed_idx) {
+            (Some(a), Some(b)) => (a, b),
+            _ => continue,
+        };
+        for line in &lines[header_index + 1..] {
+            let cols: Vec<&str> = line.split(',').collect();
+            if cols.len() <= completed_idx {
+                continue;
+            }
+            // Flags!=0 的帧按 AOSP 约定剔除（首帧、被丢弃帧等不计入耗时统计）。
+            if let Some(fi) = flags_idx {
+                if cols.get(fi).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0) != 0 {
+                    continue;
+                }
+            }
+            let iv = cols.get(intended_idx).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            let fc = cols.get(completed_idx).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+            if iv > 0 && fc > iv {
+                durations.push((fc - iv) as f64 / 1_000_000.0);
+            }
+        }
+    }
+    durations
+}
+
+/// 把一拍的每帧耗时聚合为统计量（分位 + jank% + 预算）。refresh_hz 来自 dumpsys display 探测，
+/// 非法/未知（不在 30..=360）回退 60Hz。无有效帧 → None（不编造）。
+/// 分位用最近秩法（nearest-rank）：sorted[ceil(p/100*n)-1]。jank = 耗时 > budget_ms（在自己 vsync 间隔内没做完）。
+pub fn compute_frame_timing(durations: Vec<f64>, refresh_hz: f64) -> Option<FrameTimingStats> {
+    let mut sorted: Vec<f64> = durations.into_iter().filter(|d| d.is_finite() && *d > 0.0).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    let pct = |p: f64| {
+        let rank = ((p / 100.0 * n as f64).ceil() as usize).clamp(1, n);
+        sorted[rank - 1]
+    };
+    let sum: f64 = sorted.iter().sum();
+    let avg = sum / n as f64;
+    let hz = if refresh_hz.is_finite() && (30.0..=360.0).contains(&refresh_hz) {
+        refresh_hz
+    } else {
+        60.0
+    };
+    let budget = 1000.0 / hz;
+    let jank_count = sorted.iter().filter(|d| **d > budget).count();
+    Some(FrameTimingStats {
+        frame_count: n as u32,
+        avg_ms: round1(avg),
+        p50_ms: round1(pct(50.0)),
+        p90_ms: round1(pct(90.0)),
+        p95_ms: round1(pct(95.0)),
+        p99_ms: round1(pct(99.0)),
+        max_ms: round1(sorted[n - 1]),
+        jank_count: jank_count as u32,
+        jank_percent: round1(jank_count as f64 / n as f64 * 100.0),
+        budget_ms: round1(budget),
+        refresh_hz: round1(hz),
+    })
+}
+
+/// 从 `dumpsys display` 解析当前生效刷新率（Hz）。优先用 mActiveModeId 精确匹配该 mode 的 fps，
+/// 回退 refreshRate/mRefreshRate 字段。解析不到 → None（上层回退 60Hz）。
+pub fn parse_display_refresh_rate(output: &str) -> Option<f64> {
+    let in_range = |v: f64| (30.0..=360.0).contains(&v);
+
+    // 1) active mode 精确匹配：mActiveModeId=<id> → 同 id 的 mode 行里的 fps。
+    static ACTIVE: OnceLock<Regex> = OnceLock::new();
+    if let Some(c) = re(&ACTIVE, r"(?i)mActiveModeId=(\d+)").captures(output) {
+        let id = &c[1];
+        if let Ok(mode_re) = Regex::new(&format!(
+            r"(?i)\bid={}\b[^}}\n]*?fps=(\d+(?:\.\d+)?)",
+            regex::escape(id)
+        )) {
+            if let Some(mc) = mode_re.captures(output) {
+                if let Ok(v) = mc[1].parse::<f64>() {
+                    if in_range(v) {
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) 回退：refreshRate= / mRefreshRate= 字段。
+    static RR: OnceLock<Regex> = OnceLock::new();
+    if let Some(c) =
+        re(&RR, r"(?i)(?:refreshRate|mRefreshRate)[=:\s]+(\d+(?:\.\d+)?)").captures(output)
+    {
+        if let Ok(v) = c[1].parse::<f64>() {
+            if in_range(v) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 /// 从 dumpsys window 输出解析前台应用（mCurrentFocus / mFocusedApp）。
 pub fn parse_foreground_app_from_window(output: &str) -> ForegroundAppContext {
     static CURRENT_FOCUS: OnceLock<Regex> = OnceLock::new();
@@ -384,5 +509,65 @@ Applications Memory Usage (in Kilobytes):
     #[test]
     fn meminfo_none_when_no_summary() {
         assert!(parse_meminfo_breakdown("no summary here").is_none());
+    }
+
+    #[test]
+    fn parses_frame_durations_and_skips_flagged_frames() {
+        // 列定位靠表头；Flags!=0 的帧剔除；只有 FrameCompleted>IntendedVsync 才计。
+        // 三帧：8ms、20ms（正常计入）、第三帧 Flags=1 应剔除。
+        let out = "\
+---PROFILEDATA---
+Flags,IntendedVsync,Vsync,FrameCompleted
+0,1000000,1000000,9000000
+0,2000000,2000000,22000000
+1,3000000,3000000,99000000
+---PROFILEDATA---
+";
+        let d = parse_frame_durations_ms(out);
+        assert_eq!(d.len(), 2, "Flags=1 的帧应被剔除");
+        assert!((d[0] - 8.0).abs() < 1e-6);
+        assert!((d[1] - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_frame_timing_percentiles_and_jank() {
+        // 90Hz → budget≈11.1ms。耗时 5,10,12,30 ms 中 12 与 30 超预算 → jank 2/4=50%。
+        let stats = compute_frame_timing(vec![5.0, 10.0, 12.0, 30.0], 90.0).expect("应有统计");
+        assert_eq!(stats.frame_count, 4);
+        assert_eq!(stats.jank_count, 2);
+        assert!((stats.jank_percent - 50.0).abs() < 1e-6);
+        assert!((stats.budget_ms - 11.1).abs() < 0.05, "budget={}", stats.budget_ms);
+        assert!((stats.max_ms - 30.0).abs() < 1e-6);
+        assert!((stats.refresh_hz - 90.0).abs() < 1e-6);
+        // nearest-rank：p50=ceil(0.5*4)=2 → sorted[1]=10；p99=ceil(0.99*4)=4 → sorted[3]=30。
+        assert!((stats.p50_ms - 10.0).abs() < 1e-6);
+        assert!((stats.p99_ms - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_frame_timing_defaults_60hz_and_handles_empty() {
+        assert!(compute_frame_timing(vec![], 90.0).is_none());
+        // 刷新率非法 → 回退 60Hz，budget≈16.7ms。
+        let s = compute_frame_timing(vec![10.0], 0.0).expect("应有统计");
+        assert!((s.refresh_hz - 60.0).abs() < 1e-6);
+        assert!((s.budget_ms - 16.7).abs() < 0.05, "budget={}", s.budget_ms);
+        assert_eq!(s.jank_count, 0); // 10ms < 16.7ms 不算 jank
+    }
+
+    #[test]
+    fn parses_display_refresh_rate_active_mode() {
+        let out = "\
+Display Devices: size=1
+  mActiveModeId=2
+  DisplayModeRecord{mMode={id=1, width=2160, height=2160, fps=72.000}}
+  DisplayModeRecord{mMode={id=2, width=2160, height=2160, fps=90.000}}
+";
+        assert_eq!(parse_display_refresh_rate(out), Some(90.0));
+    }
+
+    #[test]
+    fn parses_display_refresh_rate_fallback_and_none() {
+        assert_eq!(parse_display_refresh_rate("mRefreshRate=120.0"), Some(120.0));
+        assert!(parse_display_refresh_rate("no refresh info").is_none());
     }
 }

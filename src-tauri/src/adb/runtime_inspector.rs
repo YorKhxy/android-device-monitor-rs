@@ -16,16 +16,21 @@ use serde::Serialize;
 use super::error::AdbError;
 use super::manager::exec_adb;
 use super::runtime_parsers::{
-    parse_activity_stack, parse_cpu_usage, parse_foreground_app_from_window, parse_gfx_info,
-    parse_memory_usage, parse_meminfo_breakdown, parse_processes, parse_running_packages,
+    compute_frame_timing, parse_activity_stack, parse_cpu_usage, parse_display_refresh_rate,
+    parse_foreground_app_from_window, parse_frame_durations_ms, parse_gfx_info, parse_memory_usage,
+    parse_meminfo_breakdown, parse_processes, parse_running_packages,
 };
 use super::runtime_types::{
-    ActivityStackEntry, ForegroundAppContext, MemoryBreakdown, PicoMetricsPayload, ProcessInfo,
+    ActivityStackEntry, ForegroundAppContext, FrameTimingStats, MemoryBreakdown, PicoMetricsPayload,
+    ProcessInfo,
 };
 
 /// 前台应用解析重而慢（dumpsys window/activity），但前台在一次采集里几乎不变。
 /// 按设备缓存，TTL 内复用，把重型 dumpsys 从「每拍」降到「每 5 秒」——省电、少超时。
 const FOREGROUND_APP_TTL_MS: u128 = 5000;
+
+/// 设备刷新率几乎不变（开机后固定），缓存 60s，避免每拍都 dumpsys display。用于帧耗时 jank 预算。
+const REFRESH_RATE_TTL_MS: u128 = 60_000;
 
 /// Android 采样来源标注（对齐 shared/types 的 AndroidPerformancePayload）。
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +69,9 @@ pub struct PerformanceMetrics {
     // 分类内存（dumpsys meminfo <前台包>，KB）：定位「内存涨在哪一类」。取不到/无前台包 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_breakdown: Option<MemoryBreakdown>,
+    // 帧耗时统计（gfxinfo framestats 每帧耗时聚合）：分位 + jank% 看卡顿分布与长尾。取不到/无有效帧 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_timing: Option<FrameTimingStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +102,34 @@ fn foreground_cache() -> &'static Mutex<HashMap<String, (ForegroundAppContext, I
     static CACHE: OnceLock<Mutex<HashMap<String, (ForegroundAppContext, Instant)>>> =
         OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn refresh_rate_cache() -> &'static Mutex<HashMap<String, (f64, Instant)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (f64, Instant)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 设备当前刷新率（Hz），带 60s 缓存。dumpsys display 失败/解析不到 → 回退 60.0（不缓存，下拍重试）。
+/// best-effort：永不报错、永不增加整拍成败判定（与电量/分类内存同语义）。
+async fn get_display_refresh_rate_cached(adb: &Path, device_id: &str) -> f64 {
+    if let Some((hz, at)) = refresh_rate_cache().lock().ok().and_then(|m| m.get(device_id).cloned()) {
+        if at.elapsed().as_millis() < REFRESH_RATE_TTL_MS {
+            return hz;
+        }
+    }
+    let parsed = exec_adb(adb, &["-s", device_id, "shell", "dumpsys", "display"], 4000)
+        .await
+        .ok()
+        .and_then(|out| parse_display_refresh_rate(&out.stdout));
+    match parsed {
+        Some(hz) => {
+            if let Ok(mut m) = refresh_rate_cache().lock() {
+                m.insert(device_id.to_string(), (hz, Instant::now()));
+            }
+            hz
+        }
+        None => 60.0,
+    }
 }
 
 /// 一次 Android 性能采样：三项命令并发，任一失败 → 整拍 Err（不编造 0）。
@@ -141,12 +177,13 @@ pub async fn get_android_performance_metrics(
 
     // 内存走 /proc/meminfo（瞬时、格式固定、永不超时）；CPU 走 top -n 1；FPS 走 gfxinfo framestats。
     // 并排跑一条 SurfaceFlinger 合成帧率（对照探针，best-effort——失败返回 None，不参与整拍成败判定）。
-    let (mem, cpu, gfx, sf, memory_breakdown) = tokio::join!(
+    let (mem, cpu, gfx, sf, memory_breakdown, refresh_hz) = tokio::join!(
         exec_adb(adb, &mem_args, 4000),
         exec_adb(adb, &cpu_args, 5000),
         exec_adb(adb, &gfx_ref, 4000),
         super::surface_fps::sample_surface_fps(adb, device_id, pkg.as_deref()),
         breakdown_fut,
+        get_display_refresh_rate_cached(adb, device_id),
     );
 
     // 任一命令级失败（含超时）即整拍跳过——抛出而非填 0。SurfaceFlinger 探针不在此列。
@@ -159,6 +196,10 @@ pub async fn get_android_performance_metrics(
     let gfx_fps = parse_gfx_info(&gfx.stdout);
     let sf_fps = sf.as_ref().map(|s| s.fps).filter(|f| *f > 0.0);
     let fps = sf_fps.unwrap_or(gfx_fps);
+
+    // 帧耗时统计：从同一份 gfxinfo framestats 算每帧耗时，按设备刷新率定 jank 预算聚合。
+    // best-effort：SurfaceView（Unity/游戏）场景 gfxinfo 无 HWUI 帧 → 无有效帧 → None，不影响整拍。
+    let frame_timing = compute_frame_timing(parse_frame_durations_ms(&gfx.stdout), refresh_hz);
 
     let sf_layer = sf.as_ref().map(|s| s.layer.clone());
     let fps_source = if sf_fps.is_some() {
@@ -178,6 +219,7 @@ pub async fn get_android_performance_metrics(
         fps,
         battery_level: None, // dispatch 层并发回填
         memory_breakdown,
+        frame_timing,
         package_name: foreground.package_name.clone(),
         activity_name: foreground.activity_name.clone(),
         android_metrics: Some(AndroidPerformancePayload {
@@ -313,6 +355,7 @@ mod tests {
             fps: 60.0,
             battery_level: Some(77),
             memory_breakdown: None,
+            frame_timing: None,
             package_name: Some("com.x".into()),
             activity_name: None,
             android_metrics: None,
@@ -354,6 +397,7 @@ mod tests {
             fps: 90.0,
             battery_level: None,
             memory_breakdown: None,
+            frame_timing: None,
             package_name: None,
             activity_name: None,
             android_metrics: None,

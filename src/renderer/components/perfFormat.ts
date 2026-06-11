@@ -12,6 +12,11 @@ export type FilterCondition = {
   threshold: number;
 };
 
+// 三张时序图（主曲线 / 分类内存 / 帧耗时）共用的 X 轴绘图边距（绝对像素）。
+// 三张图都用它做左右内边距 + 像素级 viewBox，于是同一采集时间点落在相同 X 像素，
+// playhead、过滤标记、hover 游标在三张图之间严格对齐（左 50 容纳 Y 轴刻度，右 70 容纳次轴/标签）。
+export const CHART_PAD_X = { left: 50, right: 70 } as const;
+
 export const METRIC_LABELS: Record<CaptureMetricKey, string> = {
   fps: 'FPS',
   cpu: 'CPU %',

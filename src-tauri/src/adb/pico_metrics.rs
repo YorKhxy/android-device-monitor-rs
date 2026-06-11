@@ -232,6 +232,7 @@ pub fn parse_metrics_line(line: &str, foreground: &ForegroundAppContext) -> Perf
         fps: fps.as_ref().map(|r| r.value).unwrap_or(0.0),
         battery_level: None, // dispatch 层并发回填
         memory_breakdown: None, // 纯 Pico 指标行无 Android meminfo，dispatch 旁路时由 android 提供
+        frame_timing: None, // 纯 Pico 指标行无 gfxinfo framestats，dispatch 旁路时由 android 提供
         package_name,
         activity_name: foreground.activity_name.clone(),
         android_metrics: None,

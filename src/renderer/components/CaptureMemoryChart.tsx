@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { PerformanceCaptureSession, PerformanceSample, MemoryBreakdown } from '../../shared/types';
-import { sampleElapsedMs } from './perfFormat';
+import { CHART_PAD_X, sampleElapsedMs } from './perfFormat';
 
 // 分类内存堆叠面积图（dumpsys meminfo App Summary）：把进程内存按 Java/Native/Graphics/Code/Stack
 // 五类随时间堆叠，定位「内存涨在哪一类」。每类图例带 hover 分析提示（怎么看、涨了通常意味着什么）。
+// 像素级自适应（ResizeObserver）+ 共享 X 边距（CHART_PAD_X）：与主曲线、帧耗时图严格对齐时间轴。
 type MemCat = { key: keyof MemoryBreakdown; label: string; color: string; tip: string };
 
 const MEM_CATS: MemCat[] = [
@@ -14,9 +15,8 @@ const MEM_CATS: MemCat[] = [
   { key: 'stackKb', label: 'Stack', color: '#E8B339', tip: 'Stack 线程调用栈。通常很小；异常飙高 = 线程开太多。' },
 ];
 
-const VB_W = 920;
-const VB_H = 260;
-const PAD = { l: 46, r: 14, t: 14, b: 24 };
+// 上下边距本图自有（左右用共享 X 边距对齐）。
+const PAD = { l: CHART_PAD_X.left, r: CHART_PAD_X.right, t: 14, b: 22 };
 
 const toMb = (kb: number) => kb / 1024;
 
@@ -26,10 +26,28 @@ type Props = {
   totalMs: number;
   playheadMs: number;
   showPlayhead: boolean;
+  /** 点击/拖动联动 seek（与其它对齐图共享时间轴时传入）。 */
+  onSeekToMs?: (ms: number) => void;
+  /** SVG 绘图区高度（图例在其下方，不占此高度）。默认 170。 */
+  svgHeight?: number;
 };
 
-export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, showPlayhead }: Props) {
+export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, showPlayhead, onSeekToMs, svgHeight = 170 }: Props) {
   const [hover, setHover] = useState<{ x: number; sample: PerformanceSample } | null>(null);
+  // 只测量宽度（用于像素级 X 对齐）；高度固定，避免图例把 SVG 撑变形。
+  const [measuredWidth, setMeasuredWidth] = useState(900);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const scrubbingRef = useRef(false);
+
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => {
+      setMeasuredWidth(Math.max(360, Math.round(entry.contentRect.width)));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // 只取采到分类内存的样本（前台应用 + dumpsys meminfo 可读时才有）。
   const pts = samples
@@ -38,14 +56,16 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
 
   if (pts.length === 0) {
     return (
-      <div style={{ height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-tertiary)', fontSize: '13px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-mirror)' }}>
+      <div ref={containerRef} style={{ height: `${svgHeight}px`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-tertiary)', fontSize: '13px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-mirror)' }}>
         未采集到分类内存（需有前台应用且 dumpsys meminfo 可读）
       </div>
     );
   }
 
-  const plotW = VB_W - PAD.l - PAD.r;
-  const plotH = VB_H - PAD.t - PAD.b;
+  const width = measuredWidth;
+  const height = svgHeight;
+  const plotW = width - PAD.l - PAD.r;
+  const plotH = height - PAD.t - PAD.b;
   const start = new Date(session.startedAt);
 
   // y 轴上限：取各样本五类合计的最高值，向上取整到 512MB 的倍数 + 留白。
@@ -53,6 +73,7 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
   const topMb = Math.max(512, Math.ceil((maxMb * 1.1) / 512) * 512);
 
   const xOf = (s: PerformanceSample) => PAD.l + (totalMs > 0 ? Math.min(1, Math.max(0, sampleElapsedMs(s, start) / totalMs)) : 0) * plotW;
+  const xForMs = (ms: number) => PAD.l + (totalMs > 0 ? Math.min(1, Math.max(0, ms / totalMs)) : 0) * plotW;
   const yOf = (mb: number) => PAD.t + (1 - mb / topMb) * plotH;
 
   // 自底向上累加，每类一条填充带（band 底=已累加，顶=累加后）。
@@ -69,11 +90,18 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
   });
 
   const gridVals = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(topMb * f));
-  const playX = PAD.l + (totalMs > 0 ? Math.min(1, Math.max(0, playheadMs / totalMs)) : 0) * plotW;
+  const playX = xForMs(playheadMs);
+
+  const seekFromEvent = (clientX: number, target: SVGSVGElement) => {
+    if (!onSeekToMs || totalMs <= 0) return;
+    const rect = target.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, ((clientX - rect.left) / rect.width * width - PAD.l) / plotW));
+    onSeekToMs(ratio * totalMs);
+  };
 
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const vx = ((e.clientX - rect.left) / rect.width) * VB_W;
+    const vx = ((e.clientX - rect.left) / rect.width) * width;
     let best = pts[0];
     let bestD = Infinity;
     for (const p of pts) {
@@ -86,14 +114,32 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
   const hb = hover?.sample.metrics.memoryBreakdown;
 
   return (
-    <div style={{ position: 'relative' }}>
-      <svg viewBox={`0 0 ${VB_W} ${VB_H}`} width="100%" role="img" aria-label="Java/Native/Graphics/Code/Stack 分类内存随时间堆叠面积图" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+    <div ref={containerRef} style={{ position: 'relative', width: '100%' }}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        width="100%"
+        height={height}
+        role="img"
+        aria-label="Java/Native/Graphics/Code/Stack 分类内存随时间堆叠面积图"
+        style={{ display: 'block', cursor: onSeekToMs ? 'col-resize' : 'default', touchAction: 'none' }}
+        onPointerDown={(e) => {
+          if (!onSeekToMs) return;
+          scrubbingRef.current = true;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          seekFromEvent(e.clientX, e.currentTarget);
+        }}
+        onPointerMove={(e) => { if (scrubbingRef.current) seekFromEvent(e.clientX, e.currentTarget); }}
+        onPointerUp={() => { scrubbingRef.current = false; }}
+        onMouseMove={onMove}
+        onMouseLeave={() => setHover(null)}
+      >
         {gridVals.map((v, i) => {
           const y = yOf(v);
           return (
             <g key={i}>
-              <line x1={PAD.l} y1={y} x2={VB_W - PAD.r} y2={y} stroke="var(--chart-grid)" strokeWidth="1" />
-              <text x={PAD.l - 5} y={y + 3} fill="var(--fg-tertiary)" fontSize="9" textAnchor="end">{v >= 1024 ? (v / 1024).toFixed(1) + 'G' : v + 'M'}</text>
+              <line x1={PAD.l} y1={y} x2={width - PAD.r} y2={y} stroke="var(--chart-grid)" strokeWidth="1" />
+              <text x={PAD.l - 6} y={y + 3} fill="var(--fg-tertiary)" fontSize="10" textAnchor="end">{v >= 1024 ? (v / 1024).toFixed(1) + 'G' : v + 'M'}</text>
             </g>
           );
         })}
@@ -124,7 +170,7 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
 
       {/* hover 数值气泡 */}
       {hb && (
-        <div style={{ position: 'absolute', left: `${(hover!.x / VB_W) * 100}%`, top: 0, transform: 'translateX(8px)', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', padding: '6px 9px', fontSize: '11px', pointerEvents: 'none', boxShadow: 'var(--sh-pop)', whiteSpace: 'nowrap' }}>
+        <div style={{ position: 'absolute', left: `${(hover!.x / width) * 100}%`, top: 0, transform: 'translateX(8px)', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', padding: '6px 9px', fontSize: '11px', pointerEvents: 'none', boxShadow: 'var(--sh-pop)', whiteSpace: 'nowrap' }}>
           {MEM_CATS.map((c) => (
             <div key={c.key} style={{ color: c.color }}>{c.label} {Math.round(toMb(hb[c.key]))}MB</div>
           ))}

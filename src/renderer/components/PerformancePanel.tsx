@@ -398,8 +398,9 @@ export function PerformancePanel({
           {importDragOver && (
             <div style={{ color: 'var(--accent)', fontSize: '12px' }}>松开以导入采集会话（.zip 或会话文件夹）</div>
           )}
-          {/* 列表可能较长，限高并独立滚动，避免顶部行被撑过高。 */}
-          <div style={{ maxHeight: '232px', overflowY: 'auto', paddingRight: filteredSessions.length ? '2px' : 0 }}>
+          {/* 一次显示 5 条记录，超过再独立滚动。行高 65px(line-height 20 的标题+副标题+padding+border) + 行间 8px，
+              5 行 = 5×65 + 4×8 = 357，取 360 留余量保证第 5 条完整、第 6 条不露头。 */}
+          <div style={{ maxHeight: '360px', overflowY: 'auto', paddingRight: filteredSessions.length ? '2px' : 0 }}>
             <CaptureHistoryList
               sessions={filteredSessions}
               selectedSessionId={loadedSessionId}

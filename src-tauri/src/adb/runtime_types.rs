@@ -54,6 +54,26 @@ pub struct MemoryBreakdown {
     pub total_kb: f64,
 }
 
+/// 单拍帧耗时统计（gfxinfo framestats 每帧 FrameCompleted-IntendedVsync 聚合，单位 ms）。
+/// 比单一平均 FPS 更能看清「卡不卡、多狠」：分位看长尾（p99 抓偶发大卡顿）、jank% 看掉帧密度。
+/// 每帧耗时 = 该帧从计划上屏(IntendedVsync)到渲染完成(FrameCompleted)的总耗时；
+/// 超过一帧预算(budget_ms = 1000/刷新率)即判定为 jank（这一帧没能在它的 vsync 间隔内做完，会掉帧）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameTimingStats {
+    pub frame_count: u32,   // 本拍纳入统计的有效帧数（Flags=0 的正常帧）
+    pub avg_ms: f64,
+    pub p50_ms: f64,
+    pub p90_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
+    pub jank_count: u32,    // 耗时 > budget_ms 的帧数
+    pub jank_percent: f64,  // jank_count / frame_count * 100
+    pub budget_ms: f64,     // 判定 jank 的帧预算 = 1000/refresh_hz
+    pub refresh_hz: f64,    // 采用的设备刷新率（dumpsys display 探测，未知回退 60）
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricReading {

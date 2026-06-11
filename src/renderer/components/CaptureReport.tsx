@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
 import { CaptureChart } from './CaptureChart';
 import { CaptureMemoryChart } from './CaptureMemoryChart';
+import { CaptureFrameTimeChart } from './CaptureFrameTimeChart';
 import { CaptureFilterPanel } from './CaptureFilterPanel';
 import { Icon } from './ui';
 import { captureSegmentFrame, findNearestSample, renderMetricOverlay, renderRecordingPlaceholder } from './captureReportHelpers';
@@ -16,6 +17,9 @@ import {
 
 // 曲线 / 视频是性能模块最重要的内容，给一个较大的固定高度让它占主要区域。
 const REPORT_HEIGHT = 440;
+// 左列三张对齐图各自的绘图高度（主曲线最大，两张副图略矮）。
+const MAIN_CHART_HEIGHT = 300;
+const SUB_CHART_HEIGHT = 168;
 
 type CaptureReportProps = {
   session: PerformanceCaptureSession | null;
@@ -222,6 +226,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     setIsPlaying(false);
     seekTo(ms);
   };
+  // 标记点击：暂停并跳转到命中时间点。
+  const markerSeek = seekAndPause;
 
   const applyFilter = () => {
     const next = computeMarkers(filterConditions, samples, session.startedAt);
@@ -358,6 +364,14 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
             data-tip={isFullscreen ? '退出全屏（ESC）' : '全屏观看'}
             style={{ flexShrink: 0 }}
           ><Icon name={isFullscreen ? 'minimize' : 'maximize'} /></button>
+          {/* 占位：弹出为独立窗口的旧实现已下线（卡死/没视频），方案重做中。先留按钮占位、置灰不可点。 */}
+          <button
+            type="button"
+            disabled
+            className="btn secondary sm"
+            data-tip="弹出为独立窗口功能重做中，敬请期待"
+            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          ><Icon name="external-link" />弹出</button>
           {hasAudio && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
               <button
@@ -404,43 +418,73 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
 
   const showFilter = !live && samples.length > 0;
 
+  const showPlayheadCommon = !live && (segments.length > 0 || markCount > 0);
+  const seekCommon = !live && segments.length > 0 ? seekTo : undefined;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* 两列等高：录像按宽度放大变高后，曲线列 stretch 跟着拉伸填满，不在下方留空。
-          曲线用「相对盒 + 绝对填充」承载，避免 SVG 在百分比高度下塌缩；minHeight 兜底保证
-          无录像 / 实时态仍有基础高度。 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: '16px', alignItems: 'stretch' }}>
-        <div style={{ position: 'relative', minHeight: `${REPORT_HEIGHT}px` }}>
-          <div style={{ position: 'absolute', inset: 0 }}>
-            <CaptureChart
+      {/* 左列：三张时序图（主曲线 / 分类内存 / 帧耗时）垂直堆叠，同宽 + 共享 X 边距 →
+          同一采集时间点落在相同 X，playhead / 游标三图严格对齐，便于「FPS 掉 → 帧耗时飙 → 内存涨」对照看。
+          右列：录屏，sticky 随滚动常驻，拖任一图的时间轴都联动画面。 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }}>
+          {/* 主曲线（FPS/CPU/GPU/电量/MEM）：相对盒 + 绝对填充承载，避免 SVG 在固定高度下塌缩。 */}
+          <div style={{ position: 'relative', height: `${MAIN_CHART_HEIGHT}px` }}>
+            <div style={{ position: 'absolute', inset: 0 }}>
+              <CaptureChart
+                session={session}
+                samples={samples}
+                totalMs={totalMs}
+                selectedSeriesKeys={selectedSeriesKeys}
+                onToggleSeries={toggleSeries}
+                playheadMs={playheadMs}
+                showPlayhead={showPlayheadCommon}
+                onSeekToMs={seekCommon}
+                markers={appliedMarkers}
+                onMarkerClick={!live ? markerSeek : undefined}
+              />
+            </div>
+          </div>
+
+          {/* 帧耗时（gfxinfo framestats）：分位 + jank% 看卡顿分布与长尾。 */}
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-primary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              帧耗时
+              <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--fg-tertiary)' }} data-tip="每帧从计划上屏到渲染完成的耗时。p50 看通常手感、p99 抓偶发长尾，超帧预算线即掉帧；jank% 是卡顿帧占比。比单看平均 FPS 更能判断卡不卡、多狠。">（每帧耗时分位 · 看卡不卡、多狠）</span>
+            </div>
+            <CaptureFrameTimeChart
               session={session}
               samples={samples}
               totalMs={totalMs}
-              selectedSeriesKeys={selectedSeriesKeys}
-              onToggleSeries={toggleSeries}
               playheadMs={playheadMs}
-              showPlayhead={!live && (segments.length > 0 || markCount > 0)}
-              onSeekToMs={!live && segments.length > 0 ? seekTo : undefined}
-              markers={appliedMarkers}
-              onMarkerClick={!live ? seekAndPause : undefined}
+              showPlayhead={showPlayheadCommon}
+              onSeekToMs={seekCommon}
+              svgHeight={SUB_CHART_HEIGHT}
+            />
+          </div>
+
+          {/* 分类内存（dumpsys meminfo）：定位内存涨在哪一类。鼠标停每类图例看分析提示。 */}
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-primary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              分类内存
+              <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--fg-tertiary)' }} data-tip="按 Java/Native/Graphics/Code/Stack 五类拆分进程内存，定位「涨在哪一类」。鼠标停在每类上看怎么分析。">（dumpsys meminfo · 看内存涨在哪类）</span>
+            </div>
+            <CaptureMemoryChart
+              session={session}
+              samples={samples}
+              totalMs={totalMs}
+              playheadMs={playheadMs}
+              showPlayhead={showPlayheadCommon}
+              onSeekToMs={seekCommon}
+              svgHeight={SUB_CHART_HEIGHT}
             />
           </div>
         </div>
-        {renderVideoArea()}
-      </div>
-      {/* 分类内存（dumpsys meminfo）：定位内存涨在哪一类。鼠标停每类图例看分析提示。 */}
-      <div>
-        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-primary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          分类内存
-          <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--fg-tertiary)' }} data-tip="按 Java/Native/Graphics/Code/Stack 五类拆分进程内存，定位「涨在哪一类」。鼠标停在每类上看怎么分析。">（dumpsys meminfo · 看内存涨在哪类）</span>
+
+        {/* 录屏列：sticky 常驻，画面随时间轴联动。 */}
+        <div style={{ position: 'sticky', top: 0, alignSelf: 'start' }}>
+          {renderVideoArea()}
         </div>
-        <CaptureMemoryChart
-          session={session}
-          samples={samples}
-          totalMs={totalMs}
-          playheadMs={playheadMs}
-          showPlayhead={!live && (segments.length > 0 || markCount > 0)}
-        />
       </div>
       {showFilter && (
         <CaptureFilterPanel
