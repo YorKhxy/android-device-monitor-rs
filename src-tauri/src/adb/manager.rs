@@ -402,18 +402,20 @@ pub async fn adb_version(adb: &Path) -> Result<Option<String>, AdbError> {
     Ok(version)
 }
 
-/// 设备列表轻量快照（监控轮询 diff 用）：id|status|connType|屏幕状态|延迟状态 串联。
-/// 纳入屏幕状态与延迟状态（离散值），使息屏/唤醒切换、WiFi 连接稳定性变化能触发 device_list_changed 刷新前端；
-/// 延迟具体 ms 值不入快照（避免每拍抖动刷屏），随每次 emit 一并带出最新值。
+/// 设备列表轻量快照（监控轮询 diff 用）：id|status|connType|电量|屏幕状态|延迟状态 串联。
+/// 纳入电量、屏幕状态与延迟状态（离散值），使电量变化、息屏/唤醒切换、WiFi 连接稳定性变化能触发
+/// device_list_changed 刷新前端；电量是慢变整数不会抖屏，延迟具体 ms 值不入快照（避免每拍抖动刷屏），
+/// 随每次 emit 一并带出最新值。
 pub fn devices_snapshot(devices: &[DeviceInfo]) -> String {
     let mut parts: Vec<String> = devices
         .iter()
         .map(|d| {
             format!(
-                "{}|{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}",
                 d.id,
                 d.status,
                 d.connection_type,
+                d.battery_level.map(|b| b.to_string()).unwrap_or_default(),
                 d.screen_state.as_deref().unwrap_or(""),
                 d.latency_status.as_deref().unwrap_or(""),
             )

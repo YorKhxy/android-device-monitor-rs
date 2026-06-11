@@ -250,6 +250,9 @@ function SimpleApp() {
   const [installedPackagesLoading, setInstalledPackagesLoading] = useState(false);
   // 已安装应用「刷新」按钮的点击反馈：假冷却让图标转圈（参考采集回看刷新），快操作也有可见反馈。
   const appRefreshCooldown = useCooldown();
+  // 设备「刷新设备」「连接 USB」按钮同款点击反馈（假冷却转圈 + 禁用），让本就很快的操作也有可见反馈。
+  const deviceRefreshCooldown = useCooldown();
+  const connectUsbCooldown = useCooldown();
   const [appFilter, setAppFilter] = useState('');
   // 当前设备上在运行的应用包名集合：用于已安装列表标「运行中」并禁止重复启动。轮询刷新，反映真实状态。
   const [runningPackages, setRunningPackages] = useState<Set<string>>(new Set());
@@ -3104,11 +3107,21 @@ function SimpleApp() {
           <div style={{ order: 2 }}>
           <div className="seclabel">{'\u8bbe\u5907\u5217\u8868'}</div>
           <div style={{ display: 'flex', gap: '8px', margin: '0 0 12px 0' }}>
-            <button onClick={loadDevices} className="btn secondary" style={{ flex: 1, justifyContent: 'center' }}>
-              <Icon name="refresh-cw" />刷新设备
+            <button
+              onClick={() => deviceRefreshCooldown.run(loadDevices)}
+              disabled={deviceRefreshCooldown.cooling}
+              className="btn secondary"
+              style={{ flex: 1, justifyContent: 'center' }}
+            >
+              <span className={deviceRefreshCooldown.cooling ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="refresh-cw" /></span>刷新设备
             </button>
-            <button onClick={connectUSBDevice} className="btn secondary" style={{ flex: 1, justifyContent: 'center' }}>
-              <Icon name="usb" />连接 USB
+            <button
+              onClick={() => connectUsbCooldown.run(connectUSBDevice)}
+              disabled={connectUsbCooldown.cooling}
+              className="btn secondary"
+              style={{ flex: 1, justifyContent: 'center' }}
+            >
+              <span className={connectUsbCooldown.cooling ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="usb" /></span>连接 USB
             </button>
           </div>
           
