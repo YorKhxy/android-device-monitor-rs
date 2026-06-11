@@ -194,6 +194,8 @@ export interface PerformanceMetrics {
   cpuUsage: number;
   memoryUsage: number;
   fps: number;
+  /** 电量百分比 0-100（后端 dispatch 层并发 dumpsys battery 采集；取不到为 undefined）。 */
+  batteryLevel?: number;
   packageName?: string;
   activityName?: string;
   androidMetrics?: AndroidPerformancePayload;
@@ -240,7 +242,7 @@ export interface PerformanceCaptureSegment {
 /** 参数过滤标记：某指标按阈值命中的时间点集合，可持久化复用。 */
 export interface PerformanceCaptureMarker {
   id: string;
-  metricKey: 'fps' | 'cpu' | 'mem' | 'gpu';
+  metricKey: 'fps' | 'cpu' | 'mem' | 'gpu' | 'battery';
   op: '>' | '=' | '<';
   threshold: number;
   /** 命中的时间点（相对会话起点毫秒） */

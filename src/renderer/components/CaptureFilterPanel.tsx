@@ -51,7 +51,8 @@ const stepButtonStyle: CSSProperties = {
 const makeConditionId = () => `c-${Math.round(performance.now() * 1000)}-${Math.floor(Math.random() * 1e6)}`;
 
 export function CaptureFilterPanel({ conditions, onChange, onApply, onClear, isPico, hitCount, applied }: CaptureFilterPanelProps) {
-  const metricKeys: CaptureMetricKey[] = isPico ? ['fps', 'cpu', 'mem', 'gpu'] : ['fps', 'cpu', 'mem'];
+  // 电量为通用指标（android/pico 均采），过滤/打点也支持（如「电量 < 20」）。
+  const metricKeys: CaptureMetricKey[] = isPico ? ['fps', 'cpu', 'mem', 'gpu', 'battery'] : ['fps', 'cpu', 'mem', 'battery'];
 
   const updateCondition = (id: string, patch: Partial<FilterCondition>) =>
     onChange(conditions.map((condition) => (condition.id === id ? { ...condition, ...patch } : condition)));

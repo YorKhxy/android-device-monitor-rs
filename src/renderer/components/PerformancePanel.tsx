@@ -60,10 +60,14 @@ const buildMetricChips = (performance: PerformanceMetrics | null, isPicoView: bo
   const fps = performance ? String(performance.fps) : '--';
   const cpu = performance ? performance.cpuUsage.toFixed(1) : '--';
   const mem = performance ? formatMemoryMb(performance.memoryUsage) : '--';
+  // 电量为通用指标（android/pico 均采）；取不到显示 --。颜色用图表的青绿，与曲线口径一致。
+  const battery = performance?.batteryLevel != null ? String(performance.batteryLevel) : '--';
+  const batteryChip: MetricChip = { label: '电量', value: battery, unit: '%', color: METRIC_COLORS.battery };
   const base: MetricChip[] = [
     { label: 'FPS', value: fps, color: METRIC_COLORS.fps },
     { label: 'CPU', value: cpu, unit: '%', color: METRIC_COLORS.cpu },
     { label: 'MEM', value: mem, unit: 'MB', color: METRIC_COLORS.mem },
+    batteryChip,
   ];
   if (!isPicoView) return base;
 
@@ -83,6 +87,7 @@ const buildMetricChips = (performance: PerformanceMetrics | null, isPicoView: bo
     { label: 'FPS', value: picoFps !== undefined ? String(picoFps) : '--', unit: pico?.fps?.maxValue !== undefined ? `/${pico.fps.maxValue}` : '', color: METRIC_COLORS.fps },
     { label: 'CPU', value: cpu, unit: '%', color: METRIC_COLORS.cpu },
     { label: 'MEM', value: mem, unit: 'MB', color: METRIC_COLORS.mem },
+    batteryChip,
     { label: 'GPU', value: pico?.gpuUtil ? String(pico.gpuUtil.value) : '--', unit: pico?.gpuUtil?.unit || '%', color: METRIC_COLORS.gpu },
     { label: 'MTP', value: pico?.mtp ? String(pico.mtp.value) : '--', unit: pico?.mtp?.unit || '', color: 'var(--info)' },
     { label: 'FrmCpu', value: pico?.frameCpu ? String(pico.frameCpu.value) : '--', unit: pico?.frameCpu?.unit || '', color: 'var(--success)' },

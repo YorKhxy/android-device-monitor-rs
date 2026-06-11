@@ -230,6 +230,7 @@ pub fn parse_metrics_line(line: &str, foreground: &ForegroundAppContext) -> Perf
         cpu_usage: 0.0,
         memory_usage: 0.0,
         fps: fps.as_ref().map(|r| r.value).unwrap_or(0.0),
+        battery_level: None, // dispatch 层并发回填
         package_name,
         activity_name: foreground.activity_name.clone(),
         android_metrics: None,

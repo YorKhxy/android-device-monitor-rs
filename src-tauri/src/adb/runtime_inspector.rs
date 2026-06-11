@@ -58,6 +58,9 @@ pub struct PerformanceMetrics {
     pub cpu_usage: f64,
     pub memory_usage: f64,
     pub fps: f64,
+    // 电量百分比（0-100）：dispatch 层并发 dumpsys battery 统一回填，android/pico 通用；取不到 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_level: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,6 +163,7 @@ pub async fn get_android_performance_metrics(
         cpu_usage: parse_cpu_usage(&cpu.stdout),
         memory_usage: parse_memory_usage(&mem.stdout),
         fps,
+        battery_level: None, // dispatch 层并发回填
         package_name: foreground.package_name.clone(),
         activity_name: foreground.activity_name.clone(),
         android_metrics: Some(AndroidPerformancePayload {
@@ -293,6 +297,7 @@ mod tests {
             cpu_usage: 12.5,
             memory_usage: 2048.0,
             fps: 60.0,
+            battery_level: Some(77),
             package_name: Some("com.x".into()),
             activity_name: None,
             android_metrics: None,
@@ -308,6 +313,7 @@ mod tests {
         assert_eq!(v["fps"], 60.0);
         assert_eq!(v["cpuUsage"], 12.5);
         assert_eq!(v["memoryUsage"], 2048.0);
+        assert_eq!(v["batteryLevel"], 77);
         assert_eq!(v["packageName"], "com.x");
         // None 字段不序列化，前端按 undefined 处理。
         assert!(v.get("picoMetrics").is_none());
@@ -331,6 +337,7 @@ mod tests {
             cpu_usage: 0.0,
             memory_usage: 0.0,
             fps: 90.0,
+            battery_level: None,
             package_name: None,
             activity_name: None,
             android_metrics: None,

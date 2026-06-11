@@ -37,10 +37,13 @@ type CaptureChartProps = {
   onMarkerClick?: (ms: number) => void;
 };
 
+// 全部可画曲线（含电量）。运行时按「该会话是否采到该指标」过滤出 availableSeries——
+// 采到啥就在图例里出现啥、可逐条勾选显隐（gpu 仅 Pico、battery 仅采到电量时出现）。电量是 0-100，与 % 同轴。
 const SERIES: ChartSeries[] = [
   { key: 'fps', label: 'FPS', color: METRIC_COLORS.fps, axis: 'percent', getValue: (s) => s.metrics.fps },
   { key: 'cpu', label: 'CPU%', color: METRIC_COLORS.cpu, axis: 'percent', getValue: (s) => s.metrics.cpuUsage },
   { key: 'gpu', label: 'GPU%', color: METRIC_COLORS.gpu, axis: 'percent', getValue: getGpuValue },
+  { key: 'battery', label: '电量%', color: METRIC_COLORS.battery, axis: 'percent', getValue: (s) => s.metrics.batteryLevel },
   { key: 'mem', label: 'MEM MB', color: METRIC_COLORS.mem, axis: 'memory', getValue: (s) => Number(formatMemoryMb(s.metrics.memoryUsage)) },
 ];
 
@@ -77,8 +80,11 @@ export function CaptureChart({
   const plotWidth = width - chartPadding.left - chartPadding.right;
   const plotHeight = height - chartPadding.top - chartPadding.bottom;
 
+  // 可用指标 = 本会话样本里至少有一条有有限值的曲线（采到啥才出现）。图例/连线/悬浮都基于它，
+  // 用户在图例里逐条勾选要显示哪些参数（自主增减曲线轴上的参数）。
+  const availableSeries = SERIES.filter((s) => samples.some((sample) => Number.isFinite(s.getValue(sample))));
   const isSeriesVisible = (key: string) => selectedSeriesKeys.size === 0 || selectedSeriesKeys.has(key);
-  const visibleSeries = SERIES.filter((s) => isSeriesVisible(s.key));
+  const visibleSeries = availableSeries.filter((s) => isSeriesVisible(s.key));
   // 过滤激活时隐藏波峰波谷，只留过滤命中点，避免两套标记叠在一起很乱。
   const hasFilterMarkers = (markers ?? []).some((m) => m.atMs.length > 0);
 
@@ -264,7 +270,7 @@ export function CaptureChart({
           )}
           <text x={chartPadding.left} y="14" fill={THEME.axisText} fontSize="11">% / FPS</text>
           <text x={chartPadding.left + plotWidth - 30} y="14" fill={METRIC_COLORS.mem} fontSize="11" opacity={0.75}>MEM MB</text>
-          {SERIES.map((series, index) => {
+          {availableSeries.map((series, index) => {
             const visible = isSeriesVisible(series.key);
             const gx = chartPadding.left + index * 92;
             return (
@@ -280,10 +286,11 @@ export function CaptureChart({
       {hoverPoint && (
         <div style={{ position: 'absolute', left: `${hoverPoint.x}px`, top: `${hoverPoint.y}px`, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', padding: '8px 10px', boxShadow: 'var(--sh-pop)', pointerEvents: 'none', zIndex: 1 }}>
           <div style={{ color: 'var(--fg-primary)', fontSize: '12px', marginBottom: '4px' }}>{new Date(hoverPoint.sample.capturedAt).toLocaleString('zh-CN', { hour12: false })}</div>
-          <div style={{ color: METRIC_COLORS.fps, fontSize: '12px' }}>{`FPS ${hoverPoint.sample.metrics.fps}`}</div>
-          <div style={{ color: METRIC_COLORS.cpu, fontSize: '12px' }}>{`CPU ${hoverPoint.sample.metrics.cpuUsage.toFixed(1)}%`}</div>
-          <div style={{ color: METRIC_COLORS.mem, fontSize: '12px' }}>{`MEM ${formatMemoryMb(hoverPoint.sample.metrics.memoryUsage)}MB`}</div>
-          <div style={{ color: METRIC_COLORS.gpu, fontSize: '12px' }}>{`GPU ${getGpuValue(hoverPoint.sample) ?? '--'}%`}</div>
+          {availableSeries.map((series) => {
+            const v = series.getValue(hoverPoint.sample);
+            const text = v === undefined || !Number.isFinite(v) ? '--' : (series.axis === 'memory' ? `${v}MB` : v.toFixed(series.key === 'fps' ? 0 : 1));
+            return <div key={series.key} style={{ color: series.color, fontSize: '12px' }}>{`${series.label} ${text}`}</div>;
+          })}
         </div>
       )}
     </div>

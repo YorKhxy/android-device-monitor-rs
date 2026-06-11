@@ -176,7 +176,7 @@ async fn get_device_properties(
     Ok(parse_getprop(&out.stdout))
 }
 
-async fn get_battery_level(adb: &Path, device_id: &str) -> Option<i64> {
+pub(crate) async fn get_battery_level(adb: &Path, device_id: &str) -> Option<i64> {
     let out = exec_adb(adb, &["-s", device_id, "shell", "dumpsys", "battery"], 3000)
         .await
         .ok()?;

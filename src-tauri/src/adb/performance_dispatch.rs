@@ -11,8 +11,25 @@ use super::pico_metrics::{self, PicoAppSupportResult};
 use super::runtime_inspector::{get_android_performance_metrics, PerformanceMetrics};
 use super::runtime_types::{ForegroundAppContext, PicoMetricsPayload};
 
-/// 性能采样总入口：`prefer_pico` 由采集层显式指定时跳过设备探测。
+/// 性能采样总入口：在分流采样的同时并发取一次电量（dumpsys battery），统一回填到结果——
+/// android/pico 所有路径通用，并发故不增加每拍延迟；取不到电量为 None，不影响整拍成败。
 pub async fn get_performance_metrics(
+    adb: &Path,
+    device_id: &str,
+    foreground: &ForegroundAppContext,
+    prefer_pico: bool,
+) -> Result<PerformanceMetrics, AdbError> {
+    let (metrics, battery) = tokio::join!(
+        dispatch_performance_metrics(adb, device_id, foreground, prefer_pico),
+        super::manager::get_battery_level(adb, device_id),
+    );
+    let mut metrics = metrics?;
+    metrics.battery_level = battery;
+    Ok(metrics)
+}
+
+/// 分流采样：Pico 设备走 Pico 官方指标 + Android 旁路，否则纯 Android。`prefer_pico` 显式指定时跳过探测。
+async fn dispatch_performance_metrics(
     adb: &Path,
     device_id: &str,
     foreground: &ForegroundAppContext,
@@ -89,6 +106,7 @@ fn combine_native_pico(
         cpu_usage: android.cpu_usage,
         memory_usage: android.memory_usage,
         fps: native_fps,
+        battery_level: None, // dispatch 层并发回填
         package_name: pico.package_name,
         activity_name: pico.activity_name,
         android_metrics: android.android_metrics,
@@ -115,6 +133,7 @@ async fn build_pico_fallback(
         cpu_usage: android.cpu_usage,
         memory_usage: android.memory_usage,
         fps: android.fps,
+        battery_level: None, // dispatch 层并发回填
         package_name: android.package_name,
         activity_name: android.activity_name,
         android_metrics: android.android_metrics,

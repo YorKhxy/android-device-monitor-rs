@@ -1,7 +1,7 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { MetricReading, PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceCaptureSegment, PerformanceSample } from '../../shared/types';
 
-export type CaptureMetricKey = 'fps' | 'cpu' | 'mem' | 'gpu';
+export type CaptureMetricKey = 'fps' | 'cpu' | 'mem' | 'gpu' | 'battery';
 export type CaptureFilterOp = '>' | '=' | '<';
 
 /** 一条过滤条件：某指标按运算符与阈值比较。多条件按 AND 组合。 */
@@ -17,6 +17,7 @@ export const METRIC_LABELS: Record<CaptureMetricKey, string> = {
   cpu: 'CPU %',
   mem: 'MEM MB',
   gpu: 'GPU %',
+  battery: '电量 %',
 };
 
 // 每个指标的曲线颜色：曲线、过滤标记、过滤面板色块共用一处，保证「同一参数同一颜色」。
@@ -27,6 +28,7 @@ export const METRIC_COLORS: Record<CaptureMetricKey, string> = {
   cpu: 'var(--chart-cpu)',
   mem: 'var(--chart-mem)',
   gpu: 'var(--gold)',
+  battery: 'var(--chart-battery)', // 电量用青绿，与 fps 绿/cpu 蓝/mem 紫/gpu 金区分
 };
 
 // 性能采集报告与指标卡共用的格式化 / 取值小工具。集中放一处，避免 PerformancePanel
@@ -95,6 +97,8 @@ export const metricValueOf = (sample: PerformanceSample, key: CaptureMetricKey):
       return sample.metrics.memoryUsage / 1024;
     case 'gpu':
       return getGpuValue(sample);
+    case 'battery':
+      return sample.metrics.batteryLevel;
     default:
       return undefined;
   }
