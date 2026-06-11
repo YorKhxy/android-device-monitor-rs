@@ -107,6 +107,7 @@ fn combine_native_pico(
         memory_usage: android.memory_usage,
         fps: native_fps,
         battery_level: None, // dispatch 层并发回填
+        memory_breakdown: android.memory_breakdown, // 复用 Android 旁路采到的分类内存
         package_name: pico.package_name,
         activity_name: pico.activity_name,
         android_metrics: android.android_metrics,
@@ -134,6 +135,7 @@ async fn build_pico_fallback(
         memory_usage: android.memory_usage,
         fps: android.fps,
         battery_level: None, // dispatch 层并发回填
+        memory_breakdown: android.memory_breakdown, // 复用 Android 旁路采到的分类内存
         package_name: android.package_name,
         activity_name: android.activity_name,
         android_metrics: android.android_metrics,

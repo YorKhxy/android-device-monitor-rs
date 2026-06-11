@@ -17,10 +17,10 @@ use super::error::AdbError;
 use super::manager::exec_adb;
 use super::runtime_parsers::{
     parse_activity_stack, parse_cpu_usage, parse_foreground_app_from_window, parse_gfx_info,
-    parse_memory_usage, parse_processes, parse_running_packages,
+    parse_memory_usage, parse_meminfo_breakdown, parse_processes, parse_running_packages,
 };
 use super::runtime_types::{
-    ActivityStackEntry, ForegroundAppContext, PicoMetricsPayload, ProcessInfo,
+    ActivityStackEntry, ForegroundAppContext, MemoryBreakdown, PicoMetricsPayload, ProcessInfo,
 };
 
 /// 前台应用解析重而慢（dumpsys window/activity），但前台在一次采集里几乎不变。
@@ -61,6 +61,9 @@ pub struct PerformanceMetrics {
     // 电量百分比（0-100）：dispatch 层并发 dumpsys battery 统一回填，android/pico 通用；取不到 None。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery_level: Option<i64>,
+    // 分类内存（dumpsys meminfo <前台包>，KB）：定位「内存涨在哪一类」。取不到/无前台包 None。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_breakdown: Option<MemoryBreakdown>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -127,13 +130,23 @@ pub async fn get_android_performance_metrics(
     let mem_args = ["-s", device_id, "shell", "cat", "/proc/meminfo"];
     let cpu_args = ["-s", device_id, "shell", "top", "-n", "1"];
 
+    // 分类内存（dumpsys meminfo <前台包>）：best-effort，只在有前台包时取；失败/无包 → None，不参与整拍成败。
+    let pkg_for_mem = pkg.clone();
+    let breakdown_fut = async {
+        let p = pkg_for_mem?;
+        let args = ["-s", device_id, "shell", "dumpsys", "meminfo", p.as_str()];
+        let out = exec_adb(adb, &args, 5000).await.ok()?;
+        parse_meminfo_breakdown(&out.stdout)
+    };
+
     // 内存走 /proc/meminfo（瞬时、格式固定、永不超时）；CPU 走 top -n 1；FPS 走 gfxinfo framestats。
     // 并排跑一条 SurfaceFlinger 合成帧率（对照探针，best-effort——失败返回 None，不参与整拍成败判定）。
-    let (mem, cpu, gfx, sf) = tokio::join!(
+    let (mem, cpu, gfx, sf, memory_breakdown) = tokio::join!(
         exec_adb(adb, &mem_args, 4000),
         exec_adb(adb, &cpu_args, 5000),
         exec_adb(adb, &gfx_ref, 4000),
         super::surface_fps::sample_surface_fps(adb, device_id, pkg.as_deref()),
+        breakdown_fut,
     );
 
     // 任一命令级失败（含超时）即整拍跳过——抛出而非填 0。SurfaceFlinger 探针不在此列。
@@ -164,6 +177,7 @@ pub async fn get_android_performance_metrics(
         memory_usage: parse_memory_usage(&mem.stdout),
         fps,
         battery_level: None, // dispatch 层并发回填
+        memory_breakdown,
         package_name: foreground.package_name.clone(),
         activity_name: foreground.activity_name.clone(),
         android_metrics: Some(AndroidPerformancePayload {
@@ -298,6 +312,7 @@ mod tests {
             memory_usage: 2048.0,
             fps: 60.0,
             battery_level: Some(77),
+            memory_breakdown: None,
             package_name: Some("com.x".into()),
             activity_name: None,
             android_metrics: None,
@@ -338,6 +353,7 @@ mod tests {
             memory_usage: 0.0,
             fps: 90.0,
             battery_level: None,
+            memory_breakdown: None,
             package_name: None,
             activity_name: None,
             android_metrics: None,

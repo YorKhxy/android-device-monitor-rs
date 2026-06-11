@@ -189,6 +189,16 @@ export interface AndroidPerformancePayload {
 export type PicoMetricsState = 'native' | 'fallback' | 'unavailable';
 export type PicoAppSupportStatus = 'supported' | 'unsupported' | 'unknown';
 
+/** App 分类内存（dumpsys meminfo App Summary，单位 KB）：定位内存涨在哪一类。 */
+export interface MemoryBreakdown {
+  javaKb: number;      // Java/托管堆（脚本对象）
+  nativeKb: number;    // Native 原生堆（引擎 C/C++）
+  graphicsKb: number;  // Graphics 图形内存（贴图/模型/渲染缓冲）
+  codeKb: number;      // Code 代码与 so 库
+  stackKb: number;     // Stack 线程栈
+  totalKb: number;     // 合计 PSS
+}
+
 export interface PerformanceMetrics {
   provider: 'android' | 'pico';
   cpuUsage: number;
@@ -196,6 +206,8 @@ export interface PerformanceMetrics {
   fps: number;
   /** 电量百分比 0-100（后端 dispatch 层并发 dumpsys battery 采集；取不到为 undefined）。 */
   batteryLevel?: number;
+  /** 分类内存（dumpsys meminfo 前台包 App Summary，单位 KB）：定位内存涨在哪一类。取不到为 undefined。 */
+  memoryBreakdown?: MemoryBreakdown;
   packageName?: string;
   activityName?: string;
   androidMetrics?: AndroidPerformancePayload;

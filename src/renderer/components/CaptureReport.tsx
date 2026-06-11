@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
 import { CaptureChart } from './CaptureChart';
+import { CaptureMemoryChart } from './CaptureMemoryChart';
 import { CaptureFilterPanel } from './CaptureFilterPanel';
 import { Icon } from './ui';
 import { captureSegmentFrame, findNearestSample, renderMetricOverlay, renderRecordingPlaceholder } from './captureReportHelpers';
@@ -426,6 +427,20 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
           </div>
         </div>
         {renderVideoArea()}
+      </div>
+      {/* 分类内存（dumpsys meminfo）：定位内存涨在哪一类。鼠标停每类图例看分析提示。 */}
+      <div>
+        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-primary)', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          分类内存
+          <span style={{ fontSize: '11px', fontWeight: 400, color: 'var(--fg-tertiary)' }} data-tip="按 Java/Native/Graphics/Code/Stack 五类拆分进程内存，定位「涨在哪一类」。鼠标停在每类上看怎么分析。">（dumpsys meminfo · 看内存涨在哪类）</span>
+        </div>
+        <CaptureMemoryChart
+          session={session}
+          samples={samples}
+          totalMs={totalMs}
+          playheadMs={playheadMs}
+          showPlayhead={!live && (segments.length > 0 || markCount > 0)}
+        />
       </div>
       {showFilter && (
         <CaptureFilterPanel

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::runtime_types::{ActivityStackEntry, ForegroundAppContext, ProcessInfo};
+use super::runtime_types::{ActivityStackEntry, ForegroundAppContext, MemoryBreakdown, ProcessInfo};
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("内置正则应当合法"))
@@ -75,6 +75,53 @@ pub fn parse_memory_usage(output: &str) -> f64 {
         return (t - f).max(0.0);
     }
     read_kb(output, &USED_RAM, r"(?i)Used RAM:\s+([\d,]+)K").unwrap_or(0.0)
+}
+
+/// 解析 `dumpsys meminfo <pkg>` 的 App Summary 段，得到分类内存（KB）。
+/// 只在「App Summary」标题之后的区段里匹配，避免命中上方主表的同名行 / 多个 TOTAL 行；
+/// 至少要解析到 Java/Native/Graphics 三者之一才算成功，否则 None（解析不到不展示，不编造）。
+pub fn parse_meminfo_breakdown(output: &str) -> Option<MemoryBreakdown> {
+    let region = match output.find("App Summary") {
+        Some(i) => &output[i..],
+        None => output,
+    };
+    fn kb(region: &str, cell: &'static OnceLock<Regex>, pat: &str) -> Option<f64> {
+        re(cell, pat)
+            .captures(region)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().replace(',', "").parse::<f64>().ok())
+    }
+    static JAVA: OnceLock<Regex> = OnceLock::new();
+    static NATIVE: OnceLock<Regex> = OnceLock::new();
+    static GFX: OnceLock<Regex> = OnceLock::new();
+    static CODE: OnceLock<Regex> = OnceLock::new();
+    static STACK: OnceLock<Regex> = OnceLock::new();
+    static TOTAL: OnceLock<Regex> = OnceLock::new();
+
+    let java = kb(region, &JAVA, r"(?im)^\s*Java Heap:\s+([\d,]+)");
+    let native = kb(region, &NATIVE, r"(?im)^\s*Native Heap:\s+([\d,]+)");
+    let graphics = kb(region, &GFX, r"(?im)^\s*Graphics:\s+([\d,]+)");
+    if java.is_none() && native.is_none() && graphics.is_none() {
+        return None;
+    }
+    let code = kb(region, &CODE, r"(?im)^\s*Code:\s+([\d,]+)");
+    let stack = kb(region, &STACK, r"(?im)^\s*Stack:\s+([\d,]+)");
+    let (j, n, g, c, s) = (
+        java.unwrap_or(0.0),
+        native.unwrap_or(0.0),
+        graphics.unwrap_or(0.0),
+        code.unwrap_or(0.0),
+        stack.unwrap_or(0.0),
+    );
+    let total = kb(region, &TOTAL, r"(?im)^\s*TOTAL(?:\s+PSS)?:\s+([\d,]+)").unwrap_or(j + n + g + c + s);
+    Some(MemoryBreakdown {
+        java_kb: j,
+        native_kb: n,
+        graphics_kb: g,
+        code_kb: c,
+        stack_kb: s,
+        total_kb: total,
+    })
 }
 
 /// 解析 FPS：优先 framestats 计算，回退 legacy "<x> fps"。对齐原 parseGfxInfo。
@@ -301,4 +348,41 @@ pub fn parse_running_packages(stdout: &str) -> Vec<String> {
         }
     }
     running
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_meminfo_app_summary() {
+        // 截取 dumpsys meminfo <pkg> 的 App Summary 段（含上方主表的同名干扰行，验证只取 App Summary 段）。
+        let out = "\
+Applications Memory Usage (in Kilobytes):
+  TOTAL:   999999   (忽略：主表的 TOTAL 不应被当成 App Summary 合计)
+ App Summary
+                       Pss(KB)
+                        ------
+           Java Heap:    12,345
+         Native Heap:    23456
+                Code:     6789
+               Stack:      120
+            Graphics:    22334
+       Private Other:     4096
+              System:     8192
+           TOTAL PSS:    77332
+";
+        let b = parse_meminfo_breakdown(out).expect("应解析出分类内存");
+        assert_eq!(b.java_kb, 12345.0); // 逗号被去掉
+        assert_eq!(b.native_kb, 23456.0);
+        assert_eq!(b.graphics_kb, 22334.0);
+        assert_eq!(b.code_kb, 6789.0);
+        assert_eq!(b.stack_kb, 120.0);
+        assert_eq!(b.total_kb, 77332.0); // 取 App Summary 段的 TOTAL PSS，非主表 TOTAL
+    }
+
+    #[test]
+    fn meminfo_none_when_no_summary() {
+        assert!(parse_meminfo_breakdown("no summary here").is_none());
+    }
 }

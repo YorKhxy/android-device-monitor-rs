@@ -55,6 +55,19 @@ type PerformancePanelProps = {
 
 type MetricChip = { label: string; value: string; unit?: string; color: string; muted?: boolean };
 
+// 各指标「怎么看 / 怎么用来分析」的言简意赅提示（鼠标停留 0.35s 弹出，见 GlobalTooltip）。
+const METRIC_TIPS: Record<string, string> = {
+  FPS: '每秒帧数，越高越流畅。注意平均 FPS 会掩盖偶发卡顿——要判断卡不卡，结合帧耗时 / jank 看更准。',
+  CPU: 'CPU 占用率。持续偏高 → 逻辑 / 脚本开销大，常是主线程卡顿的源头；结合掉帧时间点对照看。',
+  MEM: '进程总内存(PSS)。看绝对值也看趋势：只涨不降 → 疑似泄漏，配合下方「分类内存」定位涨在哪一类。',
+  GPU: 'GPU 占用率。偏高 → 渲染 / 着色器 / overdraw 压力大；想降负载从减面、合批、降分辨率入手。',
+  电量: '电量百分比。注意：插 USB 调试时设备在充电、读数不反映真实耗电——要测真实掉电请用 WiFi 无线调试。',
+  MTP: '动到光子延迟(ms，VR)。从你动作到画面更新的延迟，越低越好；过高会眩晕。',
+  FrmCpu: '单帧 CPU 耗时(ms)。越低越好；接近帧预算(90fps≈11ms) 说明 CPU 侧吃紧、易掉帧。',
+  FrmGpu: '单帧 GPU 耗时(ms)。越低越好；接近帧预算说明 GPU 侧吃紧，优化渲染。',
+  ATWGPU: '异步时间扭曲 GPU 耗时(ms，VR 重投影)。偏高说明 GPU 紧张到要靠重投影补帧。',
+};
+
 // 把指标压成紧凑一行小条（色点 + 名 + 数值 + 单位），把竖向空间让给曲线/视频。
 const buildMetricChips = (performance: PerformanceMetrics | null, isPicoView: boolean, showPicoFallback: boolean): MetricChip[] => {
   const fps = performance ? String(performance.fps) : '--';
@@ -100,7 +113,7 @@ const renderMetricStrip = (performance: PerformanceMetrics | null, isPicoView: b
   // 固定列 grid（列数只随容器宽变化，与数值位数无关）：避免数值变大撑宽 chip 触发 flex 换行重排、整条高度跳动。
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px' }}>
     {buildMetricChips(performance, isPicoView, showPicoFallback).map((chip) => (
-      <div key={chip.label} style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-sm)', padding: '7px 11px', opacity: chip.muted ? 0.5 : 1 }}>
+      <div key={chip.label} data-tip={METRIC_TIPS[chip.label]} style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-sm)', padding: '7px 11px', opacity: chip.muted ? 0.5 : 1, cursor: 'help' }}>
         <span style={{ width: '8px', height: '8px', borderRadius: '2px', backgroundColor: chip.color, flexShrink: 0 }} />
         <span style={{ color: 'var(--fg-secondary)', fontSize: '12px' }}>{chip.label}</span>
         <span style={{ color: 'var(--fg-primary)', fontSize: '15px', fontWeight: 600, fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums' }}>{chip.value}</span>

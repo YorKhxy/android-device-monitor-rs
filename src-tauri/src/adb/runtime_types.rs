@@ -40,6 +40,20 @@ pub struct ForegroundAppContext {
 }
 
 /// 单项指标读数（对齐 shared/types 的 MetricReading）。
+/// App 分类内存（dumpsys meminfo <pkg> 的 App Summary 段，单位 KB）：
+/// Java 托管堆 / Native 原生堆 / Graphics 图形(显存相关) / Code 代码 so / Stack 线程栈 / total 合计 PSS。
+/// 用于「内存涨在哪一类」的定位（前端堆叠面积图 + 各类 hover 分析提示）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryBreakdown {
+    pub java_kb: f64,
+    pub native_kb: f64,
+    pub graphics_kb: f64,
+    pub code_kb: f64,
+    pub stack_kb: f64,
+    pub total_kb: f64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetricReading {
