@@ -60,13 +60,35 @@ struct Pending {
     msg_lines: Vec<String>,
 }
 
-/// 一条日志格式化为可读文本（导出用）：`时间 级别/TAG (pid:tid): 消息`。
-/// 多行消息（堆栈）原样保留其换行——整条不拆。
+/// 「导出当前可见日志」的文本行（与老工具逐字节一致）：
+/// `本地时间 设备ID pid/tid 级别/TAG: 消息`。多行消息（堆栈）原样保留其换行——整条不拆。
 pub fn format_entry(e: &LogEntry) -> String {
     format!(
-        "{} {}/{} ({}:{}): {}",
-        e.timestamp, e.level, e.tag, e.process_id, e.thread_id, e.message
+        "{} {} {}/{} {}/{}: {}",
+        local_timestamp(&e.timestamp), e.device_id, e.process_id, e.thread_id, e.level, e.tag, e.message
     )
+}
+
+/// 「完整日志落盘 / 按包名导出」的文本行（与老工具 fullLogRecorder.formatLine 一致）：比 format_entry
+/// 多一列 PID 反查的归属包名（无则 `-`）：`本地时间 设备ID 归属包名 pid/tid 级别/TAG: 消息`。
+/// 事后「按包名导出」靠这一列复刻实时采集的关联匹配口径（应用自身日志正文常不含包名）。
+pub fn format_line(e: &LogEntry) -> String {
+    let pkg = e
+        .package_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-");
+    format!(
+        "{} {} {} {}/{} {}/{}: {}",
+        local_timestamp(&e.timestamp), e.device_id, pkg, e.process_id, e.thread_id, e.level, e.tag, e.message
+    )
+}
+
+/// 内部 ISO `YYYY-MM-DDTHH:MM:SS.mmm`（本地时区，见 to_iso）→ 老工具导出/落盘用的
+/// `YYYY-MM-DD HH:MM:SS.mmm`（空格分隔，本地时间）。仅替换首个 'T'，message 内的 T 不受影响。
+fn local_timestamp(iso: &str) -> String {
+    iso.replacen('T', " ", 1)
 }
 
 /// 前端 level 联合类型只认 6 级；其余（含 logcat 的 'S' silent）归 'I' 兜底。
@@ -236,5 +258,41 @@ mod tests {
         let entries = parse_all("dev1", input);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].message, "msg");
+    }
+
+    fn sample(pkg: Option<&str>) -> LogEntry {
+        LogEntry {
+            id: "x".into(),
+            device_id: "dev1".into(),
+            timestamp: "2026-06-12T16:06:00.123".into(),
+            process_id: 1368,
+            thread_id: 15488,
+            level: "W".into(),
+            tag: "qdgralloc".into(),
+            message: "hello".into(),
+            package_name: pkg.map(str::to_string),
+        }
+    }
+
+    /// 「导出当前可见日志」行格式与老工具逐字节一致：`本地时间 设备ID pid/tid 级别/TAG: 消息`（无包名列）。
+    #[test]
+    fn format_entry_matches_legacy_layout() {
+        assert_eq!(
+            format_entry(&sample(None)),
+            "2026-06-12 16:06:00.123 dev1 1368/15488 W/qdgralloc: hello"
+        );
+    }
+
+    /// 「完整日志落盘 / 按包名导出」行格式与老工具 formatLine 一致：多一列归属包名，无归属用 `-`。
+    #[test]
+    fn format_line_has_package_column() {
+        assert_eq!(
+            format_line(&sample(Some("com.demo"))),
+            "2026-06-12 16:06:00.123 dev1 com.demo 1368/15488 W/qdgralloc: hello"
+        );
+        assert_eq!(
+            format_line(&sample(None)),
+            "2026-06-12 16:06:00.123 dev1 - 1368/15488 W/qdgralloc: hello"
+        );
     }
 }

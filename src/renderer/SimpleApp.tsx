@@ -1359,12 +1359,13 @@ function SimpleApp() {
         return next;
       });
     } else {
-      const sourcePackage = logPackageFilter.trim() || packageFilter.trim() || undefined;
       const sourcePid = logPidFilter.trim() || undefined;
       // 抓取恒定按 all levels（*:V），不受日志等级下拉框限制——等级只做显示筛选（见 filteredLogs）。
       // 这样切换等级无需重新采集，也不会因选了高等级而漏抓低等级日志。
       const sourceLevel: LogEntry['level'] = 'V';
-      const result = await window.electronAPI!.startLogcat(selectedDevice.id, sourceLevel, sourcePackage, sourcePid);
+      // 与老工具对齐：采集端全量抓取，绝不把包名下传给采集端按包名丢弃——包名仅作前端显示筛选与
+      // 「按包名导出」。否则 SDK/独立进程日志（tag、正文都不含包名）会被降噪，前端搜不到（搜 mvxrsdk 搜不到）。
+      const result = await window.electronAPI!.startLogcat(selectedDevice.id, sourceLevel, undefined, sourcePid);
       if (result.success) {
         state.running = true;
         state.paused = false;
