@@ -153,6 +153,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
       if (!detachedRef.current) return;
       setPlayheadMs(e.payload.ms);
       setIsPlaying(e.payload.playing);
+      if (typeof e.payload.muted === 'boolean') setMuted(e.payload.muted);
+      if (typeof e.payload.volume === 'number') setVolume(e.payload.volume);
     });
     return () => { void un.then((f) => f()); };
   }, []);
@@ -255,6 +257,9 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   };
 
   const handleLoadedMetadata = (video: HTMLVideoElement) => {
+    // 应用静音/音量到（可能刚重挂的）内嵌视频——保证从弹出态恢复时声音开关与弹出窗一致。
+    video.muted = muted;
+    video.volume = volume;
     if (video.videoWidth > 0 && video.videoHeight > 0) {
       setVideoSize((prev) =>
         prev && prev.width === video.videoWidth && prev.height === video.videoHeight ? prev : { width: video.videoWidth, height: video.videoHeight }
@@ -299,6 +304,18 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     } else {
       void video.play().then(() => setIsPlaying(true)).catch(() => undefined);
     }
+  };
+
+  // 声音开关/音量：内嵌态由 muted/volume effect 应用到内嵌 video；分离态发 setAudio 给弹出窗。两边状态始终一致。
+  const toggleMute = () => {
+    const next = !muted;
+    setMuted(next);
+    if (detached) void emit(POPOUT_EVENTS.setAudio, { muted: next, volume });
+  };
+  const changeVolume = (val: number) => {
+    setVolume(val);
+    setMuted(val === 0);
+    if (detached) void emit(POPOUT_EVENTS.setAudio, { muted: val === 0, volume: val });
   };
 
   // 点过滤命中标记：播放头与曲线游标对齐到该时间点，并暂停视频。
@@ -361,7 +378,7 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   // 关键：建窗走 JS 的 new WebviewWindow（异步、不碰主线程），绕开「Rust 同步命令里 build() 与事件循环死锁 → 空白窗+关不掉」的坑。
   const handlePopout = async () => {
     try {
-      await invoke('set_popout_session', { payload: { session, playheadMs } });
+      await invoke('set_popout_session', { payload: { session, playheadMs, muted, volume } });
       const existing = await WebviewWindow.getByLabel('capture-popout');
       if (existing) { await existing.setFocus(); return; }
       const w = new WebviewWindow('capture-popout', {
@@ -444,11 +461,11 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
             style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
           ><Icon name="external-link" />弹出</button>
         )}
-        {hasAudio && !detached && (
+        {hasAudio && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
             <button
               type="button"
-              onClick={() => setMuted((m) => !m)}
+              onClick={toggleMute}
               className="btn secondary sm iconbtn"
               aria-label={muted ? '取消静音' : '静音'}
               data-tip={muted ? '取消静音' : '静音'}
@@ -460,11 +477,7 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
               max={1}
               step={0.05}
               value={muted ? 0 : volume}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                setVolume(val);
-                setMuted(val === 0);
-              }}
+              onChange={(e) => changeVolume(Number(e.target.value))}
               style={{ width: '64px', accentColor: 'var(--accent)', cursor: 'pointer' }}
               aria-label="音量"
             />

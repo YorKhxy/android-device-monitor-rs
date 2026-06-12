@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import type { PerformanceCaptureSession } from '../../shared/types';
-import { POPOUT_EVENTS, type PopoutInit, type PopoutSeek, type PopoutSetPlaying } from '../lib/capturePopout';
+import { POPOUT_EVENTS, type PopoutInit, type PopoutSeek, type PopoutSetPlaying, type PopoutSetAudio } from '../lib/capturePopout';
 import { buildSegmentMediaUrl, formatClock, shouldCropCaptureVideo } from './perfFormat';
 import { Icon } from './ui';
 
@@ -15,6 +15,9 @@ export default function CapturePopout() {
   const [segIndex, setSegIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playheadMs, setPlayheadMs] = useState(0);
+  // 声音开关 + 音量：与主窗双向同步（含音会话才显示控件）。开窗时从交接箱带入主窗当前状态。
+  const [muted, setMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingSeekOffsetRef = useRef<number | null>(null);
   const initMsRef = useRef<number | null>(null);
@@ -24,6 +27,7 @@ export default function CapturePopout() {
   const segments = session?.videoSegments ?? [];
   const totalMs = session ? Math.max(1, session.durationMs || 0, segments.length ? segments[segments.length - 1].endMs : 0) : 1;
   const shouldCrop = session ? shouldCropCaptureVideo(session) : false;
+  const hasAudio = Boolean(session?.audioRecorded);
   const seg = segments[segIndex];
   const segmentUrl = session && seg ? buildSegmentMediaUrl(session.id, seg) : undefined;
 
@@ -66,6 +70,8 @@ export default function CapturePopout() {
         if (res?.data?.session) {
           setSession(res.data.session);
           initMsRef.current = res.data.playheadMs;
+          if (typeof res.data.muted === 'boolean') setMuted(res.data.muted);
+          if (typeof res.data.volume === 'number') setVolume(res.data.volume);
           setPulling(false);
           return;
         }
@@ -101,10 +107,25 @@ export default function CapturePopout() {
       if (e.payload.playing) ctxRef.current.play();
       else { ctxRef.current.pause(); ctxRef.current.emitState(false); }
     }));
+    // 主窗 → 弹出窗：设置静音/音量（两窗声音开关一致）。
+    unsubs.push(listen<PopoutSetAudio>(POPOUT_EVENTS.setAudio, (e) => {
+      setMuted(e.payload.muted);
+      setVolume(e.payload.volume);
+    }));
     return () => { unsubs.forEach((p) => void p.then((f) => f())); };
   }, []);
 
+  // 把静音/音量同步到 video（切分段时 video 按 key 重建，需重设）。React 不把 muted 当受控属性。
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = muted;
+    v.volume = volume;
+  }, [muted, volume, segIndex]);
+
   const handleLoadedMetadata = (video: HTMLVideoElement) => {
+    video.muted = muted;
+    video.volume = volume;
     if (pendingSeekOffsetRef.current != null) {
       video.currentTime = pendingSeekOffsetRef.current;
       pendingSeekOffsetRef.current = null;
@@ -118,7 +139,7 @@ export default function CapturePopout() {
     const s = segments[segIndex];
     return v && s ? s.startMs + v.currentTime * 1000 : playheadMs;
   };
-  // 向主窗广播「播放头 + 播放状态」——单一主钟，主窗据此对齐图表游标和播放按钮。
+  // 向主窗广播「播放头 + 播放状态」（高频，不带声音状态——声音变化另走 broadcastAudio，避免覆盖主窗刚切的开关）。
   const emitState = (playing: boolean, ms = currentMs()) => {
     void emit(POPOUT_EVENTS.playhead, { ms, playing });
   };
@@ -164,6 +185,14 @@ export default function CapturePopout() {
     seekTo(ms);
     emitState(false, ms);
   };
+
+  // 声音开关/音量：本地立即生效 + 立刻广播新值给主窗（暂停态没有 timeupdate，故不能等 emitState）。
+  const broadcastAudio = (m: boolean, vol: number) => {
+    const v = videoRef.current;
+    void emit(POPOUT_EVENTS.playhead, { ms: currentMs(), playing: !!v && !v.paused, muted: m, volume: vol });
+  };
+  const toggleMute = () => { const next = !muted; setMuted(next); broadcastAudio(next, volume); };
+  const changeVolume = (val: number) => { setVolume(val); setMuted(val === 0); broadcastAudio(val === 0, val); };
 
   const close = () => { void invoke('close_capture_popout').catch(() => {}); };
 
@@ -211,6 +240,23 @@ export default function CapturePopout() {
         <div style={{ color: '#ddd', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
           {formatClock(playheadMs)} / {formatClock(totalMs)}
         </div>
+        {hasAudio && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <button type="button" onClick={toggleMute} className="btn secondary sm iconbtn" aria-label={muted ? '取消静音' : '静音'} data-tip={muted ? '取消静音' : '静音'} style={{ flexShrink: 0 }}>
+              <Icon name={muted ? 'volume-x' : 'volume-2'} />
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              onChange={(e) => changeVolume(Number(e.target.value))}
+              style={{ width: '64px', accentColor: 'var(--accent)', cursor: 'pointer' }}
+              aria-label="音量"
+            />
+          </div>
+        )}
         <button onClick={close} className="btn secondary sm" style={{ flexShrink: 0, whiteSpace: 'nowrap' }}><Icon name="corner-up-left" />恢复内嵌</button>
       </div>
     </div>
