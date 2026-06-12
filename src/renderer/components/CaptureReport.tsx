@@ -74,7 +74,7 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   // 问题关键帧自动分析：是否显示标记 lane + 可调阈值（localStorage 持久化） + 阈值编辑面板开关。
-  const [showProblems, setShowProblems] = useState(true);
+  const [showProblems, setShowProblems] = useState(false);
   const [thresholds, setThresholds] = useState<ProblemThresholds>(() => loadThresholds());
   const [showThresholdEditor, setShowThresholdEditor] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
