@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { FrameTimingStats, PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
+import type { ProblemMarker } from '../lib/captureAnalysis';
 import { CHART_PAD_X, sampleElapsedMs } from './perfFormat';
+import { renderProblemLane } from './captureReportHelpers';
 
 // 帧耗时时序图（X 与主曲线 / 分类内存图共享 CHART_PAD_X，时间轴严格对齐；Y = 单帧耗时 ms）。
 // 两种数据源自适应：
@@ -22,6 +24,10 @@ type Props = {
   onSeekToMs?: (ms: number) => void;
   /** SVG 绘图区高度（图例在其下方，不占此高度）。默认 180。 */
   svgHeight?: number;
+  /** 自动检测的问题关键帧标记（顶部 ▼ lane）。 */
+  problemMarkers?: ProblemMarker[];
+  /** 是否显示问题标记 lane。 */
+  showProblems?: boolean;
 };
 
 // gfx 模式分位线定义。
@@ -31,7 +37,7 @@ const GFX_LINES: Array<{ key: keyof FrameTimingStats; label: string; color: stri
   { key: 'p99Ms', label: 'p99', color: '#E0746C', dash: '2 3', width: 1.6, tip: 'p99：最差 1% 帧的长尾。偶发大卡顿就藏在这里——p99 远高于帧预算 = 有狠卡。' },
 ];
 
-export function CaptureFrameTimeChart({ session, samples, totalMs, playheadMs, showPlayhead, onSeekToMs, svgHeight = 180 }: Props) {
+export function CaptureFrameTimeChart({ session, samples, totalMs, playheadMs, showPlayhead, onSeekToMs, svgHeight = 180, problemMarkers, showProblems }: Props) {
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [hoverSample, setHoverSample] = useState<PerformanceSample | null>(null);
   const [measuredWidth, setMeasuredWidth] = useState(900);
@@ -258,6 +264,7 @@ export function CaptureFrameTimeChart({ session, samples, totalMs, playheadMs, s
           return finite(v) ? <circle key={ln.id} cx={xOf(anchorSamples[0])} cy={yOf(v)} r="3" fill={ln.color} /> : null;
         })}
 
+        {showProblems && problemMarkers && renderProblemLane({ markers: problemMarkers, xForMs, topY: PAD.t, bottomY: PAD.t + plotH, onSeek: onSeekToMs })}
         {showPlayhead && (
           <line x1={playX} y1={PAD.t} x2={playX} y2={PAD.t + plotH} stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="4 3" />
         )}

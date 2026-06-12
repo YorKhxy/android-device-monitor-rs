@@ -1,6 +1,39 @@
 import type { CSSProperties } from 'react';
 import type { PerformanceSample } from '../../shared/types';
+import type { ProblemMarker } from '../lib/captureAnalysis';
 import { formatClock, formatMemoryMb, formatMetricReading, getGpuValue, sampleElapsedMs } from './perfFormat';
+
+// 问题关键帧「标记 lane」：三张图共用，画在绘图区顶部——严重度色(红/黄)的 ▼ 三角 + 贯穿图高的淡竖线。
+// 与过滤标记(空心圆环·曲线色·锚数值)、波峰波谷(实心点+数值牌·曲线色)形态/颜色/位置都不同，一眼能区分。
+// 点三角 → onSeek 跳到那一帧。须在 <svg> 内调用。
+export function renderProblemLane(opts: {
+  markers: ProblemMarker[];
+  xForMs: (ms: number) => number;
+  topY: number;
+  bottomY: number;
+  onSeek?: (ms: number) => void;
+}) {
+  const { markers, xForMs, topY, bottomY, onSeek } = opts;
+  return markers.map((m, i) => {
+    const x = xForMs(m.atMs);
+    const color = m.severity === 'critical' ? 'var(--danger)' : 'var(--warning)';
+    // 用工具统一的 data-tip 气泡（GlobalTooltip 全局委托，SVG 元素也生效），不用浏览器原生 <title>。
+    // 严重度作标题行，后接多行判因（触发规则 / 本秒数据 / 为什么 / 怎么定位）。
+    const tip = `${m.severity === 'critical' ? '【严重卡顿】' : '【超时】'}\n${m.label}`;
+    return (
+      <g
+        key={`prob-${m.atMs}-${i}`}
+        onPointerDown={(e) => { if (!onSeek) return; e.stopPropagation(); onSeek(m.atMs); }}
+        style={{ cursor: onSeek ? 'pointer' : 'default' }}
+      >
+        <line x1={x} y1={topY} x2={x} y2={bottomY} stroke={color} strokeWidth="1" strokeOpacity={0.25} />
+        <polygon points={`${x - 5},${topY - 1} ${x + 5},${topY - 1} ${x},${topY + 7}`} fill={color} />
+        {/* 透明热区（兼作 data-tip 锚点，气泡贴着三角弹），方便点中。 */}
+        <rect data-tip={tip} x={x - 7} y={topY - 3} width="14" height="13" fill="transparent" />
+      </g>
+    );
+  });
+}
 
 // 采集进行中的视频区占位：红点 + 「录制中」+ 已用时长，工具内不回传画面。
 export const renderRecordingPlaceholder = (elapsedMs: number) => (

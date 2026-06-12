@@ -95,8 +95,8 @@ export function GlobalTooltip() {
         borderRadius: 'var(--r-sm)',
         boxShadow: 'var(--sh-pop)',
         fontSize: '12px',
-        lineHeight: 1.4,
-        whiteSpace: 'normal',
+        lineHeight: 1.5,
+        whiteSpace: 'pre-line', // 保留 \n 换行（多行判因提示用），对无换行的提示等同 normal
         wordBreak: 'break-word',
         pointerEvents: 'none',
         opacity: pos ? 1 : 0,

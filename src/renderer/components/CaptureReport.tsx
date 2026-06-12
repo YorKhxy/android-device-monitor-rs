@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
 import { POPOUT_EVENTS, type PopoutPlayhead } from '../lib/capturePopout';
+import { computeProblemMarkers, loadThresholds, saveThresholds, DEFAULT_PROBLEM_THRESHOLDS, type ProblemThresholds } from '../lib/captureAnalysis';
 import { CaptureChart } from './CaptureChart';
 import { CaptureMemoryChart } from './CaptureMemoryChart';
 import { CaptureFrameTimeChart } from './CaptureFrameTimeChart';
@@ -24,6 +25,23 @@ const REPORT_HEIGHT = 440;
 // 左列三张对齐图各自的绘图高度（主曲线最大，两张副图略矮）。
 const MAIN_CHART_HEIGHT = 300;
 const SUB_CHART_HEIGHT = 168;
+
+// 问题分析阈值编辑：一个带标签的数字输入。
+function ThresholdNum({ label, value, step, onChange }: { label: string; value: number; step: number; onChange: (v: number) => void }) {
+  return (
+    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}>
+      {label}
+      <input
+        type="number"
+        value={value}
+        step={step}
+        min={0}
+        onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v >= 0) onChange(v); }}
+        style={{ width: '58px', backgroundColor: 'var(--bg-input)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', color: 'var(--fg-primary)', padding: '3px 6px', fontSize: '12px' }}
+      />
+    </label>
+  );
+}
 
 type CaptureReportProps = {
   session: PerformanceCaptureSession | null;
@@ -55,6 +73,10 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   // 含音录制（T2.10）回看：静音开关 + 音量；仅 audioRecorded 会话显示控件。
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
+  // 问题关键帧自动分析：是否显示标记 lane + 可调阈值（localStorage 持久化） + 阈值编辑面板开关。
+  const [showProblems, setShowProblems] = useState(true);
+  const [thresholds, setThresholds] = useState<ProblemThresholds>(() => loadThresholds());
+  const [showThresholdEditor, setShowThresholdEditor] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingSeekOffsetRef = useRef<number | null>(null);
   // 视频全屏：全屏目标是「视频盒子 + 播放控制栏」整块（playerRef），全屏时控件仍可见可操作。
@@ -188,6 +210,12 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detached]);
+
+  // 问题关键帧：从 samples + 阈值实时算（纯派生，导入导出/回放天然都有）。采集中(live)不标，采集结束后才出。
+  const problemMarkers = useMemo(
+    () => (session && !live ? computeProblemMarkers(session, samples, thresholds) : []),
+    [session, samples, thresholds, live],
+  );
 
   if (!session) {
     return <div style={{ color: 'var(--fg-tertiary)', fontSize: '13px' }}>开启采集后，这里会显示本次采集的指标曲线与录屏。</div>;
@@ -592,8 +620,49 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   const showPlayheadCommon = !live && (segments.length > 0 || markCount > 0 || detached);
   const seekCommon = !live && segments.length > 0 ? seekFromUi : undefined;
 
+  // 问题标记：实际是否画 lane（开关开 + 非采集中 + 有标记）；红/黄计数；阈值改动持久化。
+  const showProblemLane = showProblems && !live && problemMarkers.length > 0;
+  const criticalCount = problemMarkers.filter((m) => m.severity === 'critical').length;
+  const warningCount = problemMarkers.length - criticalCount;
+  const updateThresholds = (next: ProblemThresholds) => { setThresholds(next); saveThresholds(next); };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* 自动分析条：采集结束后展示发现的问题关键帧数量 + 显示开关 + 可调阈值。 */}
+      {!live && samples.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', backgroundColor: 'var(--bg-panel)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)', padding: '10px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--fg-primary)' }}>自动分析</span>
+            {problemMarkers.length > 0 ? (
+              <span style={{ fontSize: '12px', color: 'var(--fg-secondary)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                发现 {problemMarkers.length} 处可能有问题的帧
+                {criticalCount > 0 && <span style={{ color: 'var(--danger)', fontWeight: 600 }}>● 严重 {criticalCount}</span>}
+                {warningCount > 0 && <span style={{ color: 'var(--warning)', fontWeight: 600 }}>● 超时 {warningCount}</span>}
+                <span style={{ color: 'var(--fg-tertiary)' }}>· 三张图顶部 ▼ 已标出，点它跳到那一帧</span>
+              </span>
+            ) : (
+              <span style={{ fontSize: '12px', color: 'var(--fg-tertiary)' }}>未发现明显问题帧（按当前阈值）</span>
+            )}
+            <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--fg-secondary)', cursor: 'pointer', flexShrink: 0 }}>
+              <input type="checkbox" checked={showProblems} onChange={(e) => setShowProblems(e.target.checked)} style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+              显示标记
+            </label>
+            <button type="button" onClick={() => setShowThresholdEditor((v) => !v)} className="btn secondary sm" style={{ flexShrink: 0 }}><Icon name="sliders" />阈值</button>
+          </div>
+          {showThresholdEditor && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 18px', alignItems: 'center', paddingTop: '8px', borderTop: '1px dashed var(--border-subtle)', fontSize: '12px', color: 'var(--fg-secondary)' }}>
+              <span style={{ color: 'var(--fg-tertiary)' }}>普通安卓(gfxinfo)：</span>
+              <ThresholdNum label="严重·最大>×预算" value={thresholds.criticalMaxFactor} step={0.5} onChange={(v) => updateThresholds({ ...thresholds, criticalMaxFactor: v })} />
+              <ThresholdNum label="超时·p99>×预算" value={thresholds.warningP99Factor} step={0.1} onChange={(v) => updateThresholds({ ...thresholds, warningP99Factor: v })} />
+              <ThresholdNum label="超时·jank>%" value={thresholds.warningJankPct} step={1} onChange={(v) => updateThresholds({ ...thresholds, warningJankPct: v })} />
+              <span style={{ color: 'var(--fg-tertiary)' }}>｜ Pico：</span>
+              <ThresholdNum label="严重·>×预算" value={thresholds.picoCriticalFactor} step={0.5} onChange={(v) => updateThresholds({ ...thresholds, picoCriticalFactor: v })} />
+              <ThresholdNum label="超时·>×预算" value={thresholds.picoWarningFactor} step={0.5} onChange={(v) => updateThresholds({ ...thresholds, picoWarningFactor: v })} />
+              <button type="button" onClick={() => updateThresholds({ ...DEFAULT_PROBLEM_THRESHOLDS })} className="btn ghost sm">恢复默认</button>
+            </div>
+          )}
+        </div>
+      )}
       {/* 左列：三张时序图（主曲线 / 分类内存 / 帧耗时）垂直堆叠，同宽 + 共享 X 边距 →
           同一采集时间点落在相同 X，playhead / 游标三图严格对齐，便于「FPS 掉 → 帧耗时飙 → 内存涨」对照看。
           右列：录屏，sticky 随滚动常驻，拖任一图的时间轴都联动画面。弹出到独立窗后右列收起、图表铺满全宽，控制条移到图表下方。 */}
@@ -613,6 +682,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
                 onSeekToMs={seekCommon}
                 markers={appliedMarkers}
                 onMarkerClick={!live ? markerSeek : undefined}
+                problemMarkers={problemMarkers}
+                showProblems={showProblemLane}
               />
             </div>
           </div>
@@ -631,6 +702,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
               showPlayhead={showPlayheadCommon}
               onSeekToMs={seekCommon}
               svgHeight={SUB_CHART_HEIGHT}
+              problemMarkers={problemMarkers}
+              showProblems={showProblemLane}
             />
           </div>
 
@@ -648,6 +721,8 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
               showPlayhead={showPlayheadCommon}
               onSeekToMs={seekCommon}
               svgHeight={SUB_CHART_HEIGHT}
+              problemMarkers={problemMarkers}
+              showProblems={showProblemLane}
             />
           </div>
         </div>

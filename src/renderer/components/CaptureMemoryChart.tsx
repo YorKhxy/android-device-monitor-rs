@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PerformanceCaptureSession, PerformanceSample, MemoryBreakdown } from '../../shared/types';
+import type { ProblemMarker } from '../lib/captureAnalysis';
 import { CHART_PAD_X, sampleElapsedMs } from './perfFormat';
+import { renderProblemLane } from './captureReportHelpers';
 
 // 分类内存堆叠面积图（dumpsys meminfo App Summary）：把进程内存按 Java/Native/Graphics/Code/Stack
 // 五类随时间堆叠，定位「内存涨在哪一类」。每类图例带 hover 分析提示（怎么看、涨了通常意味着什么）。
@@ -30,9 +32,13 @@ type Props = {
   onSeekToMs?: (ms: number) => void;
   /** SVG 绘图区高度（图例在其下方，不占此高度）。默认 170。 */
   svgHeight?: number;
+  /** 自动检测的问题关键帧标记（顶部 ▼ lane）。 */
+  problemMarkers?: ProblemMarker[];
+  /** 是否显示问题标记 lane。 */
+  showProblems?: boolean;
 };
 
-export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, showPlayhead, onSeekToMs, svgHeight = 170 }: Props) {
+export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, showPlayhead, onSeekToMs, svgHeight = 170, problemMarkers, showProblems }: Props) {
   const [hover, setHover] = useState<{ x: number; sample: PerformanceSample } | null>(null);
   // 只测量宽度（用于像素级 X 对齐）；高度固定，避免图例把 SVG 撑变形。
   const [measuredWidth, setMeasuredWidth] = useState(900);
@@ -146,6 +152,7 @@ export function CaptureMemoryChart({ session, samples, totalMs, playheadMs, show
         {bands.map((b) => (
           <path key={b.cat.key} d={b.d} fill={b.cat.color} fillOpacity={0.78} stroke={b.cat.color} strokeWidth="0.8" />
         ))}
+        {showProblems && problemMarkers && renderProblemLane({ markers: problemMarkers, xForMs, topY: PAD.t, bottomY: PAD.t + plotH, onSeek: onSeekToMs })}
         {showPlayhead && (
           <line x1={playX} y1={PAD.t} x2={playX} y2={PAD.t + plotH} stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="4 3" />
         )}

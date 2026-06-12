@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
+import type { ProblemMarker } from '../lib/captureAnalysis';
 import { CHART_PAD_X, formatMemoryMb, getGpuValue, METRIC_COLORS, sampleElapsedMs, type CaptureMetricKey } from './perfFormat';
+import { renderProblemLane } from './captureReportHelpers';
 
 // 图表主题统一走 design token（SVG 的 fill/stroke/background 均接受 var()）。
 const THEME = {
@@ -36,6 +38,10 @@ type CaptureChartProps = {
   /** 参数过滤标记：每个条件各自在「自己指标的曲线」上打点，按指标区分颜色，跟随该曲线显隐。 */
   markers?: Array<{ metricKey: CaptureMetricKey; atMs: number[] }>;
   onMarkerClick?: (ms: number) => void;
+  /** 自动检测的问题关键帧标记（顶部 ▼ lane）。 */
+  problemMarkers?: ProblemMarker[];
+  /** 是否显示问题标记 lane。 */
+  showProblems?: boolean;
 };
 
 // 全部可画曲线（含电量）。运行时按「该会话是否采到该指标」过滤出 availableSeries——
@@ -59,6 +65,8 @@ export function CaptureChart({
   onSeekToMs,
   markers,
   onMarkerClick,
+  problemMarkers,
+  showProblems,
 }: CaptureChartProps) {
   const [hoverPoint, setHoverPoint] = useState<HoverPoint | null>(null);
   const [size, setSize] = useState({ width: 900, height: 420 });
@@ -263,6 +271,7 @@ export function CaptureChart({
               ];
             });
           })}
+          {showProblems && problemMarkers && renderProblemLane({ markers: problemMarkers, xForMs, topY: chartPadding.top, bottomY: baseY, onSeek: onSeekToMs })}
           {showPlayhead && (
             <g>
               <line x1={playheadX} y1={chartPadding.top} x2={playheadX} y2={baseY} stroke={THEME.playhead} strokeWidth="1.5" strokeDasharray="4 3" />
