@@ -523,6 +523,13 @@ function SimpleApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDevice?.serialNo, selectedDevice?.id]);
 
+  // 成功提示自动消失（约 3.5s）；仍保留手动「关闭」。
+  useEffect(() => {
+    if (!success) return;
+    const t = window.setTimeout(() => setSuccess(''), 3500);
+    return () => window.clearTimeout(t);
+  }, [success]);
+
   useEffect(() => {
     maxLogEntriesRef.current = maxLogEntries;
     logStatesRef.current.forEach(state => state.store.setLimit(maxLogEntries));
@@ -1089,10 +1096,20 @@ function SimpleApp() {
   const mdnsConnectedKeys = new Set<string>(devices.flatMap((d) => [d.serialNo, d.id].filter(Boolean) as string[]));
   const visibleMdns = mdnsDevices.filter((m) => !(m.serial && mdnsConnectedKeys.has(m.serial)) && !mdnsConnectedKeys.has(m.target));
 
-  // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1a\u4ec5\u5f53 SN \u5339\u914d\u5230\u7528\u6237\u8bbe\u7684\u300c\u81ea\u5b9a\u4e49\u540d\u300d\u624d\u663e\u793a\u540d\u5b57\uff1b\u9ed8\u8ba4\u540d\uff08\u578b\u53f7/\u5386\u53f2\u8bbe\u5907\u540d\uff09\u4e0d\u7b97\uff0c\u663e\u793a SN\u3002
+  // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1amDNS \u5e7f\u64ad\u7684\u77ed id\uff08\u5982 adb-7e9d2ce\uff09\u5e38\u4e0e\u8bbe\u5907\u771f\u5b9e\u5e8f\u5217\u53f7\u4e0d\u4e00\u81f4\uff0c\u5148\u6309 IP \u628a\u53d1\u73b0\u9879\u5173\u8054\u5230
+  // \u5df2\u77e5\u8bbe\u5907\u7684\u771f\u5b9e SN\uff08\u5df2\u8fde WiFi \u8bbe\u5907 / \u5386\u53f2\u8bbe\u5907\uff09\uff0c\u518d\u6309\u771f\u5b9e SN \u53d6\u300c\u81ea\u5b9a\u4e49\u540d\u300d\uff1b\u53d6\u4e0d\u5230\u81ea\u5b9a\u4e49\u540d\u5c31\u663e\u793a\u771f\u5b9e SN\u3002
   const resolveMdnsName = (d: MdnsDevice): string => {
-    const custom = d.serial ? customDeviceNames[d.serial]?.trim() : undefined;
-    return custom || d.serial || d.name;
+    const ip = (d.target || '').split(':')[0];
+    let realSn = '';
+    const conn = devices.find((dev) => dev.connectionType === 'wifi' && (dev.id || '').split(':')[0] === ip);
+    if (conn?.serialNo && conn.serialNo !== 'Unknown') realSn = conn.serialNo;
+    if (!realSn) {
+      const hist = historyDevices.find((h) => (h.lastAddress || '').split(':')[0] === ip);
+      if (hist?.serialNo && hist.serialNo !== 'Unknown') realSn = hist.serialNo;
+    }
+    if (!realSn) realSn = d.serial || '';
+    const custom = (customDeviceNames[realSn] || (d.serial ? customDeviceNames[d.serial] : undefined))?.trim();
+    return custom || realSn || d.name;
   };
 
   const clearHistoryError = useCallback((serialNo: string) => {
@@ -1244,7 +1261,7 @@ function SimpleApp() {
         setPairCode('');
         if (result.data?.alreadyPaired) {
           // \u5df2\u914d\u5bf9\u8fc7\uff1a\u63d0\u793a\u5e76\u628a\u5df2\u8fde\u63a5\u7684 IP:\u7aef\u53e3\u586b\u5165\u4e0a\u65b9 WiFi \u8fde\u63a5\u6846\uff0c\u65b9\u4fbf\u7528\u6237\u76f4\u63a5\u8fde\u63a5
-          setSuccess(result.data.message || '\u8be5\u8bbe\u5907\u5df2\u914d\u5bf9\u8fc7');
+          setSuccess('\u8be5\u8bbe\u5907\u4e4b\u524d\u5df2\u914d\u5bf9\u8fc7\uff0c\u53ef\u76f4\u63a5\u8fde\u63a5');
           if (result.data.device) {
             setWifiIp(result.data.device.id);
           } else {
@@ -1257,14 +1274,14 @@ function SimpleApp() {
           await loadDevices();
         } else if (result.data?.device) {
           // \u914d\u5bf9\u540e\u5df2\u81ea\u52a8\u8fde\u4e0a\uff0c\u76f4\u63a5\u5237\u65b0\u8bbe\u5907\u5217\u8868\uff0c\u65e0\u9700\u7528\u6237\u518d\u586b IP:\u7aef\u53e3
-          setSuccess(result.data.message || '\u914d\u5bf9\u5e76\u8fde\u63a5\u6210\u529f');
+          setSuccess('\u914d\u5bf9\u6210\u529f\uff0c\u5df2\u81ea\u52a8\u8fde\u63a5\u8bbe\u5907');
           setShowPairForm(false);
           setPairAddress('');
           await loadAdbStatus();
           await loadDevices();
         } else {
           // \u81ea\u52a8\u8fde\u63a5\u5931\u8d25\uff08\u5c11\u6570\u73af\u5883\uff09\uff0c\u9000\u56de\u624b\u52a8\uff1a\u628a IP \u586b\u5230\u8fde\u63a5\u6846\u8ba9\u7528\u6237\u8865\u7aef\u53e3
-          setSuccess(result.data?.message || '\u914d\u5bf9\u6210\u529f\uff0c\u8bf7\u5728\u4e0a\u65b9\u586b\u5199 IP:\u8fde\u63a5\u7aef\u53e3\u70b9\u300c\u8fde\u63a5\u300d');
+          setSuccess('\u914d\u5bf9\u6210\u529f\uff0c\u8bf7\u5728\u4e0a\u65b9\u586b\u5199 IP:\u8fde\u63a5\u7aef\u53e3\u70b9\u300c\u8fde\u63a5\u300d');
           const ipPart = pairAddress.trim().split(':')[0];
           if (ipPart) {
             setWifiIp(ipPart + ':');
@@ -3335,7 +3352,7 @@ function SimpleApp() {
                 <button
                   onClick={() => mdnsScanCooldown.run(refreshMdns)}
                   disabled={mdnsScanCooldown.cooling}
-                  data-tip={'\u91cd\u65b0\u626b\u63cf\u5c40\u57df\u7f51\u5185\u7684\u65e0\u7ebf\u8bbe\u5907\uff08adb mDNS\uff09'}
+                  data-tip={'\u91cd\u65b0\u626b\u63cf\u5c40\u57df\u7f51\u5185\u7684\u65e0\u7ebf\u8bbe\u5907'}
                   className="btn ghost sm"
                 >
                   <span className={mdnsScanCooldown.cooling ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="refresh-cw" /></span>{mdnsScanCooldown.cooling ? '\u626b\u63cf\u4e2d' : '\u626b\u63cf'}
@@ -3375,8 +3392,8 @@ function SimpleApp() {
 
             {showPairForm && (
               <div className="subpanel" style={{ marginTop: '8px', padding: '10px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--fg-secondary)', lineHeight: '1.6', marginBottom: '8px' }}>
-                  {'\u8bbe\u5907\uff1a\u8bbe\u7f6e \u2192 \u5f00\u53d1\u8005\u9009\u9879 \u2192 \u65e0\u7ebf\u8c03\u8bd5 \u2192 \u300c\u4f7f\u7528\u914d\u5bf9\u7801\u914d\u5bf9\u8bbe\u5907\u300d\uff0c\u586b\u4e0b\u65b9\u5f39\u7a97\u91cc\u7684\u914d\u5bf9\u5730\u5740\uff08IP:\u7aef\u53e3\uff09\u548c 6 \u4f4d\u914d\u5bf9\u7801\u3002\u914d\u5bf9\u6210\u529f\u540e\u4f1a\u81ea\u52a8\u8fde\u63a5\u8bbe\u5907\uff0c\u65e0\u9700\u518d\u624b\u52a8\u586b\u7aef\u53e3\u3002'}
+                <div style={{ fontSize: '11px', color: 'var(--fg-secondary)', lineHeight: '1.6', marginBottom: '8px', whiteSpace: 'pre-line' }}>
+                  {'\u8bbe\u5907\uff1a\u8bbe\u7f6e \u2192 \u5f00\u53d1\u8005\u9009\u9879 \u2192 \u65e0\u7ebf\u8c03\u8bd5 \u2192 \u300c\u4f7f\u7528\u914d\u5bf9\u7801\u914d\u5bf9\u8bbe\u5907\u300d\uff0c\u586b\u4e0b\u65b9\u5f39\u7a97\u91cc\u7684\u914d\u5bf9\u5730\u5740\uff08IP:\u7aef\u53e3\uff09\u548c 6 \u4f4d\u914d\u5bf9\u7801\u3002\u914d\u5bf9\u6210\u529f\u540e\u4f1a\u81ea\u52a8\u8fde\u63a5\u8bbe\u5907\uff0c\u65e0\u9700\u518d\u624b\u52a8\u586b\u7aef\u53e3\u3002\n\u63d0\u793a\uff1a\u6388\u6743\u8fc7\u3001\u5df2\u5f00\u65e0\u7ebf\u8c03\u8bd5\u7684\u8bbe\u5907\u4f1a\u76f4\u63a5\u51fa\u73b0\u5728\u4e0a\u9762\u300c\u5c40\u57df\u7f51\u8bbe\u5907\uff08\u81ea\u52a8\u53d1\u73b0\uff09\u300d\u91cc\uff0c\u70b9\u4e00\u4e0b\u5373\u8fde\uff0c\u65e0\u9700\u914d\u5bf9\u3002'}
                 </div>
                 <div className="field" style={{ marginBottom: '8px' }}>
                   <input
@@ -3391,9 +3408,10 @@ function SimpleApp() {
                     <input
                       type="text"
                       inputMode="numeric"
+                      maxLength={6}
                       placeholder={'6 \u4f4d\u914d\u5bf9\u7801'}
                       value={pairCode}
-                      onChange={(e) => setPairCode(e.target.value)}
+                      onChange={(e) => setPairCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                       onKeyPress={(e) => { if (e.key === 'Enter') { pairWiFiDevice(); } }}
                     />
                   </div>
@@ -3401,7 +3419,7 @@ function SimpleApp() {
                     onClick={pairWiFiDevice}
                     disabled={pairing}
                     className="btn primary"
-                  >{pairing ? '\u914d\u5bf9\u4e2d\u2026' : '\u914d\u5bf9'}</button>
+                  ><span className={pairing ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="link" /></span>{pairing ? '\u914d\u5bf9\u4e2d\u2026' : '\u914d\u5bf9'}</button>
                 </div>
               </div>
             )}
@@ -3791,40 +3809,31 @@ function SimpleApp() {
 
       {error && (
         <div style={{
-          position: 'fixed',
-          bottom: '16px',
-          right: '16px',
-          padding: '12px 16px',
-          backgroundColor: '#ef4444',
-          color: 'white', 
-          borderRadius: '8px',
-          fontSize: '14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px'
+          position: 'fixed', bottom: '16px', right: '16px', zIndex: 4000, maxWidth: '420px',
+          display: 'flex', alignItems: 'flex-start', gap: '10px',
+          padding: '11px 12px', backgroundColor: 'var(--bg-elevated)',
+          border: '1px solid var(--danger)', borderLeft: '3px solid var(--danger)',
+          borderRadius: 'var(--r-md)', boxShadow: 'var(--sh-pop)',
+          fontSize: '13px', color: 'var(--fg-primary)', lineHeight: 1.5,
         }}>
-          {error}
-          <button onClick={() => setError('')} style={{ cursor: 'pointer' }}>{'\u5173\u95ed'}</button>
+          <span style={{ flexShrink: 0, color: 'var(--danger)', display: 'inline-flex', marginTop: '1px' }}><Icon name="alert-triangle" size={16} /></span>
+          <span style={{ flex: 1, whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{error}</span>
+          <button onClick={() => setError('')} data-tip={'\u5173\u95ed'} className="btn ghost sm iconbtn" style={{ flexShrink: 0, marginTop: '-2px' }}><Icon name="x" size={14} /></button>
         </div>
       )}
 
       {success && (
         <div style={{
-          position: 'fixed',
-          bottom: error ? '72px' : '16px',
-          right: '16px',
-          maxWidth: '420px',
-          padding: '12px 16px',
-          backgroundColor: '#22c55e',
-          color: 'white',
-          borderRadius: '8px',
-          fontSize: '14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px'
+          position: 'fixed', bottom: error ? '74px' : '16px', right: '16px', zIndex: 4000, maxWidth: '420px',
+          display: 'flex', alignItems: 'flex-start', gap: '10px',
+          padding: '11px 12px', backgroundColor: 'var(--bg-elevated)',
+          border: '1px solid var(--success)', borderLeft: '3px solid var(--success)',
+          borderRadius: 'var(--r-md)', boxShadow: 'var(--sh-pop)',
+          fontSize: '13px', color: 'var(--fg-primary)', lineHeight: 1.5,
         }}>
-          {success}
-          <button onClick={() => setSuccess('')} style={{ cursor: 'pointer' }}>{'\u5173\u95ed'}</button>
+          <span style={{ flexShrink: 0, color: 'var(--success)', display: 'inline-flex', marginTop: '1px' }}><Icon name="check-circle" size={16} /></span>
+          <span style={{ flex: 1, whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{success}</span>
+          <button onClick={() => setSuccess('')} data-tip={'\u5173\u95ed'} className="btn ghost sm iconbtn" style={{ flexShrink: 0, marginTop: '-2px' }}><Icon name="x" size={14} /></button>
         </div>
       )}
 
