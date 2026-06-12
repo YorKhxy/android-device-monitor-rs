@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
-import { AdbStatus, DeviceInfo, HistoryDevice, MirrorSession, PerformanceMetrics, PerformanceCaptureSession, PerformanceCaptureSessionDetail, PerformanceCaptureMarker, PerformanceSample, LogEntry, WeakNetworkHelperStatus, WeakNetworkProfile, WeakNetworkShaperStats, UpdateStatus } from '../shared/types';
+import { AdbStatus, DeviceInfo, HistoryDevice, MdnsDevice, MirrorSession, PerformanceMetrics, PerformanceCaptureSession, PerformanceCaptureSessionDetail, PerformanceCaptureMarker, PerformanceSample, LogEntry, WeakNetworkHelperStatus, WeakNetworkProfile, WeakNetworkShaperStats, UpdateStatus } from '../shared/types';
 import { PerformancePanel } from './components/PerformancePanel';
 import { MirrorPanel } from './components/MirrorPanel';
 import { FilesPanel } from './components/FilesPanel';
@@ -101,6 +101,10 @@ const saveStoredDeviceNames = (names: Record<string, string>) => {
   window.localStorage.setItem(DEVICE_NAME_STORAGE_KEY, JSON.stringify(names));
 };
 
+/** 自定义名按 SN 存储的键：优先序列号（IP 变了/重连也认得是同一台），SN 缺失/Unknown 才退回设备 id。 */
+const deviceNameKey = (serialNo?: string, fallbackId?: string) =>
+  (serialNo && serialNo !== 'Unknown' ? serialNo : (fallbackId || ''));
+
 const formatOperationError = <T,>(result: ElectronResult<T>, fallbackMessage: string) => {
   const baseMessage = result.error || fallbackMessage;
   return result.hint ? `${baseMessage} ${result.hint}` : baseMessage;
@@ -194,6 +198,8 @@ function SimpleApp() {
   const [installing, setInstalling] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
   const [customDeviceNames, setCustomDeviceNames] = useState<Record<string, string>>(() => loadStoredDeviceNames());
+  const [nameDraft, setNameDraft] = useState(''); // 自定义名编辑草稿：点「确认」才按 SN 保存
+  const nameSaveCooldown = useCooldown();          // 确认按钮点击特效（与「刷新设备」同款）
   const [activeTab, setActiveTab] = useState<TabType>('devices');
   // 侧边设备栏折叠：收起后宽度归零，主内容（含性能曲线）自动占满腾出的横向空间。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -284,6 +290,10 @@ function SimpleApp() {
   );
   const [runningLogDeviceIds, setRunningLogDeviceIds] = useState<Set<string>>(() => new Set());
   const [wifiIp, setWifiIp] = useState('');
+  // 局域网 mDNS 自动发现的设备（Pico 等无线设备，点一下直连，免输 IP）。
+  const [mdnsDevices, setMdnsDevices] = useState<MdnsDevice[]>([]);
+  const [mdnsScanned, setMdnsScanned] = useState(false); // 是否扫过一次（控制空态文案：未扫 vs 扫过无果）
+  const mdnsScanCooldown = useCooldown(); // 扫描按钮点击特效：与「刷新设备」同款（假冷却转圈 + 禁用）
   // 历史 WiFi 设备（快速重连）。初始从 localStorage 读取，已按最近连接时间倒序。
   const [historyDevices, setHistoryDevices] = useState<HistoryDevice[]>(() => loadHistoryDevices());
   // 正在快速连接的历史卡片 serialNo（连接中按钮禁用 + 即时反馈）。
@@ -364,7 +374,7 @@ function SimpleApp() {
   }, []);
 
   const getDeviceDisplayName = useCallback((device: DeviceInfo) => {
-    const customName = customDeviceNames[device.id]?.trim();
+    const customName = customDeviceNames[deviceNameKey(device.serialNo, device.id)]?.trim();
     return customName || device.name || device.model || device.id;
   }, [customDeviceNames]);
 
@@ -506,6 +516,12 @@ function SimpleApp() {
   useEffect(() => {
     selectedDeviceRef.current = selectedDevice;
   }, [selectedDevice]);
+
+  // 切换选中设备时，把自定义名草稿同步成该 SN 已存的名字（不依赖 customDeviceNames，避免保存时把正在编辑的草稿重置）。
+  useEffect(() => {
+    setNameDraft(customDeviceNames[deviceNameKey(selectedDevice?.serialNo, selectedDevice?.id)] || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevice?.serialNo, selectedDevice?.id]);
 
   useEffect(() => {
     maxLogEntriesRef.current = maxLogEntries;
@@ -1048,6 +1064,35 @@ function SimpleApp() {
     } else {
       setError(res.errorMessage || 'WiFi \u8fde\u63a5\u5931\u8d25');
     }
+  };
+
+  // \u5c40\u57df\u7f51 mDNS \u81ea\u52a8\u53d1\u73b0\uff1a\u8dd1 adb mdns services\uff0c\u5217\u51fa\u9644\u8fd1\u65e0\u7ebf\u8bbe\u5907\uff08\u70b9\u4e00\u4e0b\u76f4\u8fde\uff09\u3002
+  const refreshMdns = useCallback(async () => {
+    if (!hasElectronAPI()) return;
+    try {
+      const res = await window.electronAPI!.discoverMdnsDevices();
+      setMdnsDevices(res.success && Array.isArray(res.data) ? res.data : []);
+    } finally {
+      setMdnsScanned(true);
+    }
+  }, []);
+
+  // \u70b9\u53d1\u73b0\u7684\u8bbe\u5907\u76f4\u8fde\uff08\u590d\u7528 performWifiConnect\uff1a\u6210\u529f\u843d\u5386\u53f2\uff1b\u8fde\u4e0a\u540e\u8be5\u8bbe\u5907\u4f1a\u88ab\u300c\u6392\u9664\u5df2\u8fde\u63a5\u300d\u8fc7\u6ee4\u6389\uff0c\u4e0d\u518d\u663e\u793a\uff09\u3002
+  const connectMdnsDevice = async (target: string) => {
+    setError('\u6b63\u5728\u8fde\u63a5...');
+    const res = await performWifiConnect(target);
+    if (res.success) setError('');
+    else setError(res.errorMessage || 'WiFi \u8fde\u63a5\u5931\u8d25');
+  };
+
+  // \u53d1\u73b0\u5217\u8868\u6392\u9664\u5df2\u8fde\u63a5\u8bbe\u5907\uff08\u6309\u5e8f\u5217\u53f7 / ip:\u7aef\u53e3\u5339\u914d\uff09\u2014\u2014\u8fde\u4e0a\u540e\u81ea\u52a8\u4ece\u5217\u8868\u6d88\u5931\u3002
+  const mdnsConnectedKeys = new Set<string>(devices.flatMap((d) => [d.serialNo, d.id].filter(Boolean) as string[]));
+  const visibleMdns = mdnsDevices.filter((m) => !(m.serial && mdnsConnectedKeys.has(m.serial)) && !mdnsConnectedKeys.has(m.target));
+
+  // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1a\u4ec5\u5f53 SN \u5339\u914d\u5230\u7528\u6237\u8bbe\u7684\u300c\u81ea\u5b9a\u4e49\u540d\u300d\u624d\u663e\u793a\u540d\u5b57\uff1b\u9ed8\u8ba4\u540d\uff08\u578b\u53f7/\u5386\u53f2\u8bbe\u5907\u540d\uff09\u4e0d\u7b97\uff0c\u663e\u793a SN\u3002
+  const resolveMdnsName = (d: MdnsDevice): string => {
+    const custom = d.serial ? customDeviceNames[d.serial]?.trim() : undefined;
+    return custom || d.serial || d.name;
   };
 
   const clearHistoryError = useCallback((serialNo: string) => {
@@ -3283,6 +3328,43 @@ function SimpleApp() {
               >{'\u8fde\u63a5'}</button>
             </div>
 
+            {/* \u5c40\u57df\u7f51\u8bbe\u5907\u81ea\u52a8\u53d1\u73b0\uff08mDNS\uff09\uff1a\u514d\u8f93 IP\uff0c\u70b9\u4e00\u4e0b\u76f4\u8fde\u3002Pico \u7b49\u65e0\u7ebf\u8bbe\u5907\u5728\u6b64\u51fa\u73b0\u3002 */}
+            <div style={{ marginTop: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                <span style={{ fontSize: '12px', color: 'var(--fg-secondary)' }}>{'\u5c40\u57df\u7f51\u8bbe\u5907\uff08\u81ea\u52a8\u53d1\u73b0\uff09'}</span>
+                <button
+                  onClick={() => mdnsScanCooldown.run(refreshMdns)}
+                  disabled={mdnsScanCooldown.cooling}
+                  data-tip={'\u91cd\u65b0\u626b\u63cf\u5c40\u57df\u7f51\u5185\u7684\u65e0\u7ebf\u8bbe\u5907\uff08adb mDNS\uff09'}
+                  className="btn ghost sm"
+                >
+                  <span className={mdnsScanCooldown.cooling ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="refresh-cw" /></span>{mdnsScanCooldown.cooling ? '\u626b\u63cf\u4e2d' : '\u626b\u63cf'}
+                </button>
+              </div>
+              {visibleMdns.length === 0 ? (
+                <div style={{ fontSize: '11px', color: 'var(--fg-tertiary)', padding: '6px 0' }}>
+                  {mdnsScanCooldown.cooling ? '\u6b63\u5728\u626b\u63cf\u2026' : (mdnsScanned ? '\u672a\u53d1\u73b0\u8bbe\u5907\u3002\u786e\u8ba4\u8bbe\u5907\u5df2\u5f00\u300c\u65e0\u7ebf\u8c03\u8bd5\u300d\u3001\u548c\u7535\u8111\u5728\u540c\u4e00 WiFi\u3002' : '\u70b9\u300c\u626b\u63cf\u300d\u53d1\u73b0\u5c40\u57df\u7f51\u5185\u7684\u65e0\u7ebf\u8bbe\u5907')}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {visibleMdns.map((d) => (
+                    <button
+                      key={d.target}
+                      onClick={() => { void connectMdnsDevice(d.target); }}
+                      data-tip={`\u70b9\u51fb\u8fde\u63a5 ${d.target}`}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', textAlign: 'left', cursor: 'pointer', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-sm)', padding: '7px 10px', color: 'var(--fg-primary)' }}
+                    >
+                      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                        <span style={{ fontSize: '12px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{resolveMdnsName(d)}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--fg-tertiary)', fontFamily: 'var(--font-mono)' }}>{d.target}</span>
+                      </span>
+                      <span style={{ flexShrink: 0, color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Icon name="wifi" size={14} />{'\u8fde\u63a5'}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div style={{ marginTop: '8px' }}>
               <span
                 className="link"
@@ -3341,7 +3423,7 @@ function SimpleApp() {
                   const cardError = historyErrorBySerial[item.serialNo];
                   // 卡片标题用设备显示名，不用型号：优先当前自定义名（按上次地址匹配，重命名即时生效），
                   // 回退写入时存的显示名，再回退型号。
-                  const displayName = customDeviceNames[item.lastAddress]?.trim() || item.name || item.model;
+                  const displayName = customDeviceNames[deviceNameKey(item.serialNo, item.lastAddress)]?.trim() || item.name || item.model;
                   return (
                     <div key={item.serialNo} style={{ padding: '12px 14px', background: 'var(--bg-panel)', borderRadius: 'var(--r-md)', border: '1px solid var(--border-default)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
@@ -3424,13 +3506,20 @@ function SimpleApp() {
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <div className="field" style={{ flex: 1 }}>
                       <input
-                        value={customDeviceNames[selectedDevice.id] || ''}
-                        onChange={(e) => updateCustomDeviceName(selectedDevice.id, e.target.value)}
+                        value={nameDraft}
+                        onChange={(e) => setNameDraft(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') void nameSaveCooldown.run(async () => updateCustomDeviceName(deviceNameKey(selectedDevice.serialNo, selectedDevice.id), nameDraft)); }}
                         placeholder={selectedDevice.name || selectedDevice.model || selectedDevice.id}
                       />
                     </div>
                     <button
-                      onClick={() => updateCustomDeviceName(selectedDevice.id, '')}
+                      onClick={() => void nameSaveCooldown.run(async () => updateCustomDeviceName(deviceNameKey(selectedDevice.serialNo, selectedDevice.id), nameDraft))}
+                      disabled={nameSaveCooldown.cooling}
+                      data-tip={'\u4fdd\u5b58\u81ea\u5b9a\u4e49\u540d\uff08\u6309\u8bbe\u5907\u5e8f\u5217\u53f7\u5173\u8054\uff0cIP \u53d8\u4e86\u4e5f\u8ba4\u5f97\uff09'}
+                      className="btn primary sm"
+                    ><span className={nameSaveCooldown.cooling ? 'adm-spin' : undefined} style={{ display: 'inline-flex' }}><Icon name="check" /></span>{'\u786e\u8ba4'}</button>
+                    <button
+                      onClick={() => { setNameDraft(''); updateCustomDeviceName(deviceNameKey(selectedDevice.serialNo, selectedDevice.id), ''); }}
                       className="btn secondary sm"
                     >{'\u6062\u590d\u9ed8\u8ba4'}</button>
                   </div>
@@ -3638,7 +3727,7 @@ function SimpleApp() {
 
                 {activeTab === 'mirror' && selectedDevice && (
                   <MirrorPanel
-                    deviceName={customDeviceNames[selectedDevice.id] || selectedDevice.name || selectedDevice.id}
+                    deviceName={customDeviceNames[deviceNameKey(selectedDevice.serialNo, selectedDevice.id)] || selectedDevice.name || selectedDevice.id}
                     isPico={isLikelyPicoDevice(selectedDevice)}
                     session={mirrorSessionsByDeviceId[selectedDevice.id] || null}
                     starting={mirrorStartingDeviceIds.has(selectedDevice.id)}
@@ -3686,7 +3775,7 @@ function SimpleApp() {
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #1f2937' }}>
               <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>
-                {'📁 设备文件 · '}{customDeviceNames[fileBrowserDevice.id] || fileBrowserDevice.name || fileBrowserDevice.id}
+                {'📁 设备文件 · '}{customDeviceNames[deviceNameKey(fileBrowserDevice.serialNo, fileBrowserDevice.id)] || fileBrowserDevice.name || fileBrowserDevice.id}
               </span>
               <button
                 onClick={closeFileBrowser}

@@ -66,6 +66,18 @@ pub async fn pair_wifi(app: AppHandle, target: String, pairing_code: String) -> 
     }
 }
 
+/// 局域网 mDNS 自动发现可连接设备（解析 adb 自带 `adb mdns services`，零额外依赖）。
+#[tauri::command]
+pub async fn discover_mdns_devices(app: AppHandle) -> Value {
+    match binary::resolve_adb_path(&app) {
+        None => adb_not_found(),
+        Some(adb) => match super::mdns::discover(&adb).await {
+            Ok(svcs) => json!({ "success": true, "data": super::mdns::connectable(svcs) }),
+            Err(e) => e.to_result(),
+        },
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn disconnect(app: AppHandle, device_id: String) -> Value {
     // 断开设备时回收其常驻 PxrMetric 流（否则等空闲看门狗 15s 后才回收）。

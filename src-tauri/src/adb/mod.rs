@@ -9,6 +9,7 @@ pub mod install;
 pub mod logcat_parser;
 pub mod logcat_stream;
 pub mod manager;
+pub mod mdns;
 pub mod monitor;
 pub mod performance_dispatch;
 pub mod pico_metrics;

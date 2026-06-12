@@ -46,6 +46,7 @@ pub fn run() {
             adb::commands::pair_wifi,
             adb::commands::disconnect,
             adb::commands::connect_usb,
+            adb::commands::discover_mdns_devices,
             // 日志（T4-4 真实现）
             commands::logcat::start_logcat,
             commands::logcat::stop_logcat,

@@ -44,6 +44,7 @@ const api: ElectronAPI = {
   getAdbStatus: () => call('get_adb_status'),
   getDevices: () => call('get_devices'),
   connectWiFi: (ip) => call('connect_wifi', { ip }),
+  discoverMdnsDevices: () => call('discover_mdns_devices'),
   pairWiFi: (target, pairingCode) => call('pair_wifi', { target, pairingCode }),
   disconnect: (deviceId) => call('disconnect', { deviceId }),
   connectUSB: () => call('connect_usb'),

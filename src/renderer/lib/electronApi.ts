@@ -1,4 +1,5 @@
 import type {
+  MdnsDevice,
   ActivityStackEntry,
   AdbStatus,
   ApkInstallResult,
@@ -45,6 +46,8 @@ export interface ElectronAPI {
   getDevices: () => Promise<ElectronResult<DeviceInfo[]>>;
   connectWiFi: (ip: string) => Promise<ElectronResult<DeviceInfo>>;
   pairWiFi: (target: string, pairingCode: string) => Promise<ElectronResult<PairResult>>;
+  /** 局域网 mDNS 自动发现可连接设备（Pico 等无线设备）。 */
+  discoverMdnsDevices: () => Promise<ElectronResult<MdnsDevice[]>>;
   disconnect: (deviceId: string) => Promise<ElectronResult<undefined>>;
   startLogcat: (
     deviceId: string,

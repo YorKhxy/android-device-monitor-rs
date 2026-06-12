@@ -33,6 +33,19 @@ export interface PairResult {
   alreadyPaired?: boolean;
 }
 
+/** mDNS 自动发现的局域网设备（adb mdns services 解析）。 */
+export interface MdnsDevice {
+  name: string;
+  serial?: string;
+  serviceType: string;
+  host: string;
+  port: number;
+  /** host:port，给 adb connect。 */
+  target: string;
+  /** 是否配对服务（_adb-tls-pairing._tcp）。 */
+  pairing: boolean;
+}
+
 export interface DeviceFileEntry {
   name: string;
   path: string;
