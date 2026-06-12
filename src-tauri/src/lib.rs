@@ -18,6 +18,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 采集回放弹出窗的初始化数据交接箱（拉取式，见 commands::popout）。
+        .manage(commands::popout::PopoutSessionState::default())
         // 采集媒体协议 adm-media://<相对路径> → 运行时根目录磁盘文件（视频/截图，支持 Range + CORS）。
         .register_uri_scheme_protocol(performance::media::SCHEME, |_ctx, request| {
             performance::media::handle(&request)
@@ -112,6 +114,11 @@ pub fn run() {
             commands::device::unlock_device,
             commands::device::reboot_device,
             commands::get_app_version,
+            // 视频独立窗口（采集回放弹出，方案二）
+            commands::popout::open_capture_popout,
+            commands::popout::close_capture_popout,
+            commands::popout::set_popout_session,
+            commands::popout::get_popout_session,
             updater::get_release_notes,
             // 日志导出（T4-5 真实现）
             commands::logcat::export_logs,

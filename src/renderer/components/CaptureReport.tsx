@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { emit, listen } from '@tauri-apps/api/event';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { PerformanceCaptureMarker, PerformanceCaptureSession, PerformanceSample } from '../../shared/types';
+import { POPOUT_EVENTS, type PopoutPlayhead } from '../lib/capturePopout';
 import { CaptureChart } from './CaptureChart';
 import { CaptureMemoryChart } from './CaptureMemoryChart';
 import { CaptureFrameTimeChart } from './CaptureFrameTimeChart';
@@ -57,6 +61,13 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   // ESC 由浏览器原生退出，另提供控制栏按钮 + 全屏右上角悬浮按钮进/退。
   const playerRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // 视频弹出独立窗口（方案二）态：true 时弹出窗是播放主钟——主窗拖时间轴发 seek 给它、它回播放头驱动图表游标。
+  const [detached, setDetached] = useState(false);
+  const detachedRef = useRef(false);
+  detachedRef.current = detached;
+  const popoutWinRef = useRef<WebviewWindow | null>(null);
+  // 恢复内嵌时把内嵌视频定位到弹出窗最后播放头用——经 ref 持有 seekTo（seekTo 定义在早返回之后，effect 在其之前，故走 ref 避免 TDZ）。
+  const restoreSeekRef = useRef<(ms: number) => void>(() => {});
   // markers prop 可能每次渲染换新引用；只在切会话时播种，故经 ref 读取避免反复复位过滤态。
   const markersPropRef = useRef(markers);
   markersPropRef.current = markers;
@@ -136,6 +147,46 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  // 弹出窗 → 主窗：播放头 + 播放状态广播（注册一次）。分离态用它驱动图表游标、并对齐主窗播放按钮（单一主钟）。
+  useEffect(() => {
+    const un = listen<PopoutPlayhead>(POPOUT_EVENTS.playhead, (e) => {
+      if (!detachedRef.current) return;
+      setPlayheadMs(e.payload.ms);
+      setIsPlaying(e.payload.playing);
+    });
+    return () => { void un.then((f) => f()); };
+  }, []);
+
+  // 切会话 / 切实时态：关掉残留的弹出窗并复位分离态（旧窗放的是旧会话录像）。
+  // 立即把 detachedRef 置 false：挡掉旧弹出窗在关闭瞬间迟发的播放头事件，避免新会话被错误定位（而非从头）。
+  useEffect(() => {
+    detachedRef.current = false;
+    setDetached(false);
+    const w = popoutWinRef.current;
+    popoutWinRef.current = null;
+    if (w) void w.close().catch(() => {});
+  }, [sessionId, live]);
+
+  // 卸载（离开性能页等）时关掉残留的弹出窗，避免孤儿窗口。
+  useEffect(() => () => {
+    const w = popoutWinRef.current;
+    popoutWinRef.current = null;
+    if (w) void w.close().catch(() => {});
+  }, []);
+
+  // 分离态切换：进入弹出态暂停内嵌视频（避免双视频同播）；恢复内嵌时把内嵌视频定位到弹出窗最后的播放头，
+  // 这样点播放从该处续播、滑块与画面一致，而不是回到开头。
+  useEffect(() => {
+    if (detached) {
+      if (videoRef.current) videoRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      restoreSeekRef.current(playheadMs);
+      setIsPlaying(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detached]);
+
   if (!session) {
     return <div style={{ color: 'var(--fg-tertiary)', fontSize: '13px' }}>开启采集后，这里会显示本次采集的指标曲线与录屏。</div>;
   }
@@ -177,8 +228,31 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     }
   };
 
+  // UI 拖动统一入口：拖动即「暂停 + 定格到该位置」，随后点播放从此处续播（不从头开始）。
+  // 分离态把 seek(pause) 发给弹出窗（它跳转暂停后经 playhead 回推对齐游标）；内嵌态暂停本地视频并 seekTo。
+  const seekFromUi = (ms: number) => {
+    setIsPlaying(false);
+    if (detached) {
+      setPlayheadMs(Math.max(0, Math.min(totalMs, ms)));
+      void emit(POPOUT_EVENTS.seek, { ms, pause: true });
+    } else {
+      if (videoRef.current) videoRef.current.pause();
+      seekTo(ms);
+    }
+  };
+
   // 每次渲染同步键盘 seek 上下文（此处之上 seekTo / playheadMs / totalMs / live 均已定义）。
-  keyboardSeekRef.current = { seekTo, playheadMs, totalMs, live };
+  keyboardSeekRef.current = { seekTo: seekFromUi, playheadMs, totalMs, live };
+  // 恢复内嵌定位：弹出态内嵌 <video> 已卸载，恢复时是「全新挂载」——必须经 pendingSeekOffsetRef 让
+  // onLoadedMetadata 落位（直接设 currentTime 在元数据就绪前会丢）。经 ref 暴露给上方 effect。
+  restoreSeekRef.current = (ms: number) => {
+    const clamped = Math.max(0, Math.min(totalMs, ms));
+    setPlayheadMs(clamped);
+    if (segments.length === 0) return;
+    const idx = findSegmentIndex(clamped);
+    pendingSeekOffsetRef.current = Math.max(0, (clamped - segments[idx].startMs) / 1000);
+    setActiveSegmentIndex(idx);
+  };
 
   const handleLoadedMetadata = (video: HTMLVideoElement) => {
     if (video.videoWidth > 0 && video.videoHeight > 0) {
@@ -210,6 +284,13 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   };
 
   const togglePlay = () => {
+    // 分离态：播放控制统一发给弹出窗（单一主钟），不碰内嵌视频，避免两窗各播各的、轴漂移。
+    if (detached) {
+      const next = !isPlaying;
+      setIsPlaying(next);
+      void emit(POPOUT_EVENTS.setPlaying, { playing: next });
+      return;
+    }
     const video = videoRef.current;
     if (!video) return;
     if (isPlaying) {
@@ -226,8 +307,15 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     setIsPlaying(false);
     seekTo(ms);
   };
-  // 标记点击：暂停并跳转到命中时间点。
-  const markerSeek = seekAndPause;
+  // 标记点击：分离态发给弹出窗（跳转并暂停），内嵌态走本地暂停跳转。
+  const markerSeek = (ms: number) => {
+    if (detached) {
+      setPlayheadMs(Math.max(0, Math.min(totalMs, ms)));
+      void emit(POPOUT_EVENTS.seek, { ms, pause: true });
+    } else {
+      seekAndPause(ms);
+    }
+  };
 
   const applyFilter = () => {
     const next = computeMarkers(filterConditions, samples, session.startedAt);
@@ -247,14 +335,18 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
   const hasVideoSize = Boolean(videoSize && videoSize.width > 0 && videoSize.height > 0);
   const currentSample = findNearestSample(samples, session.startedAt, playheadMs);
 
-  // 截当前帧自动归档：用离屏 crossOrigin video 抓 activeSegment 在播放头处的帧，不弹系统保存框。
+  // 截当前帧自动归档：用离屏 crossOrigin video 抓播放头处的帧，不弹系统保存框。
+  // 按 playheadMs 推导所在分段（而非 activeSegmentIndex）——分离态 activeSegmentIndex 不随弹出窗更新，多分段会取错段。
   const handleCaptureFrame = async () => {
-    if (!activeSegment || !segmentUrl || !onSaveFrame || capturingFrame) return;
+    const headIdx = findSegmentIndex(playheadMs);
+    const headSeg = segments[headIdx];
+    const headUrl = headSeg ? buildSegmentMediaUrl(session.id, headSeg) : undefined;
+    if (!headSeg || !headUrl || !onSaveFrame || capturingFrame) return;
     setCapturingFrame(true);
     setFrameNote(null);
     try {
-      const offsetSec = Math.max(0, (playheadMs - activeSegment.startMs) / 1000);
-      const dataUrl = await captureSegmentFrame(segmentUrl, offsetSec, shouldCrop);
+      const offsetSec = Math.max(0, (playheadMs - headSeg.startMs) / 1000);
+      const dataUrl = await captureSegmentFrame(headUrl, offsetSec, shouldCrop);
       await onSaveFrame(session.id, dataUrl);
       setFrameNote('截图已保存');
     } catch (error) {
@@ -265,6 +357,136 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
     }
   };
 
+  // 弹出为独立 Tauri 窗口（方案二，第一步）：先把会话 + 当前播放头存进后端交接箱，再用前端 JS 建窗。
+  // 关键：建窗走 JS 的 new WebviewWindow（异步、不碰主线程），绕开「Rust 同步命令里 build() 与事件循环死锁 → 空白窗+关不掉」的坑。
+  const handlePopout = async () => {
+    try {
+      await invoke('set_popout_session', { payload: { session, playheadMs } });
+      const existing = await WebviewWindow.getByLabel('capture-popout');
+      if (existing) { await existing.setFocus(); return; }
+      const w = new WebviewWindow('capture-popout', {
+        url: 'index.html#popout=capture',
+        title: '采集回放 · 视频',
+        width: 880,
+        height: 560,
+        minWidth: 320,
+        minHeight: 200,
+      });
+      popoutWinRef.current = w;
+      setDetached(true);
+      // 建窗失败（权限/标签冲突等）回报，便于定位。
+      void w.once('tauri://error', (e) => {
+        setDetached(false);
+        popoutWinRef.current = null;
+        setFrameNote(`弹出失败：${typeof e.payload === 'string' ? e.payload : JSON.stringify(e.payload)}`);
+        window.setTimeout(() => setFrameNote(null), 6000);
+      });
+      // 弹出窗被销毁（点 X / 关闭按钮 / 程序关闭）→ 恢复内嵌态。
+      void w.once('tauri://destroyed', () => {
+        setDetached(false);
+        popoutWinRef.current = null;
+      });
+    } catch (error) {
+      setDetached(false);
+      setFrameNote(`弹出失败：${error instanceof Error ? error.message : '未知错误'}`);
+      window.setTimeout(() => setFrameNote(null), 6000);
+    }
+  };
+
+  // 恢复内嵌：关掉弹出窗（其 tauri://destroyed 会把 detached 置回 false、并把内嵌视频定位到最后播放头）。
+  const restoreInline = () => {
+    const w = popoutWinRef.current;
+    if (w) void w.close().catch(() => {});
+    else setDetached(false);
+  };
+
+  // 控制栏（内嵌态在视频下方，弹出态在图表下方全宽条复用）。弹出态下隐藏全屏/弹出/音量，仅留 播放/进度/时间/截图。
+  const renderControls = () => (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '10px' }}>
+        <button
+          type="button"
+          onClick={togglePlay}
+          className="btn iconbtn"
+          style={{ width: '40px', height: '40px', borderRadius: '999px', flexShrink: 0 }}
+          aria-label={isPlaying ? '暂停' : '播放'}
+        >
+          <Icon name={isPlaying ? 'pause' : 'play'} size={18} />
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={Math.round(totalMs)}
+          value={Math.round(playheadMs)}
+          onChange={(e) => seekFromUi(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 0, accentColor: 'var(--accent)', cursor: 'pointer' }}
+          aria-label="采集时间轴"
+        />
+        <div style={{ color: 'var(--fg-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+          {formatClock(playheadMs)} / {formatClock(totalMs)}
+        </div>
+        {!detached && (
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className="btn secondary sm iconbtn"
+            aria-label={isFullscreen ? '退出全屏' : '全屏'}
+            data-tip={isFullscreen ? '退出全屏（ESC）' : '全屏观看'}
+            style={{ flexShrink: 0 }}
+          ><Icon name={isFullscreen ? 'minimize' : 'maximize'} /></button>
+        )}
+        {!detached && (
+          <button
+            type="button"
+            onClick={handlePopout}
+            className="btn secondary sm"
+            data-tip="把视频弹成独立窗口（可拖到第二屏）"
+            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          ><Icon name="external-link" />弹出</button>
+        )}
+        {hasAudio && !detached && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setMuted((m) => !m)}
+              className="btn secondary sm iconbtn"
+              aria-label={muted ? '取消静音' : '静音'}
+              data-tip={muted ? '取消静音' : '静音'}
+              style={{ flexShrink: 0 }}
+            ><Icon name={muted ? 'volume-x' : 'volume-2'} /></button>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={muted ? 0 : volume}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                setVolume(val);
+                setMuted(val === 0);
+              }}
+              style={{ width: '64px', accentColor: 'var(--accent)', cursor: 'pointer' }}
+              aria-label="音量"
+            />
+          </div>
+        )}
+        {onSaveFrame && (
+          <button
+            type="button"
+            onClick={handleCaptureFrame}
+            disabled={capturingFrame}
+            data-tip="把当前画面存为截图（自动归档到会话）"
+            className="btn secondary sm"
+            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+          ><Icon name="image" />{capturingFrame ? '截图中…' : '截图'}</button>
+        )}
+      </div>
+      {frameNote && (
+        <div style={{ color: frameNote.startsWith('截图失败') ? 'var(--danger)' : 'var(--success)', fontSize: '12px', marginTop: '6px' }}>{frameNote}</div>
+      )}
+    </>
+  );
+
   const renderVideoArea = () => {
     if (live) {
       return <div style={{ height: `${REPORT_HEIGHT}px` }}>{renderRecordingPlaceholder(elapsedMs ?? 0)}</div>;
@@ -273,6 +495,20 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
       return (
         <div style={{ height: `${REPORT_HEIGHT}px`, borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-mirror)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-tertiary)', fontSize: '13px' }}>
           本次采集没有录屏分段。
+        </div>
+      );
+    }
+    // 弹出态：不渲染内嵌视频盒子（视频在副屏弹出窗），只留提示条 + 控制栏。作为图表下方全宽条呈现。
+    if (detached) {
+      return (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-md)', padding: '10px 12px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'var(--fg-secondary)' }}>
+              <Icon name="external-link" size={14} />视频已弹出为独立窗口（可拖到第二屏）；此处的播放/进度/截图与弹出窗实时同步。
+            </span>
+            <button onClick={restoreInline} className="btn secondary sm" style={{ flexShrink: 0, whiteSpace: 'nowrap' }}><Icon name="corner-up-left" />恢复回内嵌</button>
+          </div>
+          {renderControls()}
         </div>
       );
     }
@@ -333,100 +569,22 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
             </button>
           )}
         </div>
-        {/* 可拖动时间轴：播放头横跨整条逻辑轴，分段在轴上以刻度分隔。 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '10px' }}>
-          <button
-            type="button"
-            onClick={togglePlay}
-            className="btn iconbtn"
-            style={{ width: '40px', height: '40px', borderRadius: '999px', flexShrink: 0 }}
-            aria-label={isPlaying ? '暂停' : '播放'}
-          >
-            <Icon name={isPlaying ? 'pause' : 'play'} size={18} />
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={Math.round(totalMs)}
-            value={Math.round(playheadMs)}
-            onChange={(e) => seekTo(Number(e.target.value))}
-            style={{ flex: 1, minWidth: 0, accentColor: 'var(--accent)', cursor: 'pointer' }}
-            aria-label="采集时间轴"
-          />
-          <div style={{ color: 'var(--fg-secondary)', fontSize: '12px', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
-            {formatClock(playheadMs)} / {formatClock(totalMs)}
-          </div>
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="btn secondary sm iconbtn"
-            aria-label={isFullscreen ? '退出全屏' : '全屏'}
-            data-tip={isFullscreen ? '退出全屏（ESC）' : '全屏观看'}
-            style={{ flexShrink: 0 }}
-          ><Icon name={isFullscreen ? 'minimize' : 'maximize'} /></button>
-          {/* 占位：弹出为独立窗口的旧实现已下线（卡死/没视频），方案重做中。先留按钮占位、置灰不可点。 */}
-          <button
-            type="button"
-            disabled
-            className="btn secondary sm"
-            data-tip="弹出为独立窗口功能重做中，敬请期待"
-            style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
-          ><Icon name="external-link" />弹出</button>
-          {hasAudio && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-              <button
-                type="button"
-                onClick={() => setMuted((m) => !m)}
-                className="btn secondary sm iconbtn"
-                aria-label={muted ? '取消静音' : '静音'}
-                data-tip={muted ? '取消静音' : '静音'}
-                style={{ flexShrink: 0 }}
-              ><Icon name={muted ? 'volume-x' : 'volume-2'} /></button>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={muted ? 0 : volume}
-                onChange={(e) => {
-                  const val = Number(e.target.value);
-                  setVolume(val);
-                  setMuted(val === 0);
-                }}
-                style={{ width: '64px', accentColor: 'var(--accent)', cursor: 'pointer' }}
-                aria-label="音量"
-              />
-            </div>
-          )}
-          {onSaveFrame && (
-            <button
-              type="button"
-              onClick={handleCaptureFrame}
-              disabled={capturingFrame}
-              data-tip="把当前画面存为截图（自动归档到会话）"
-              className="btn secondary sm"
-              style={{ flexShrink: 0, whiteSpace: 'nowrap' }}
-            ><Icon name="image" />{capturingFrame ? '截图中…' : '截图'}</button>
-          )}
-        </div>
-        {frameNote && (
-          <div style={{ color: frameNote.startsWith('截图失败') ? 'var(--danger)' : 'var(--success)', fontSize: '12px', marginTop: '6px' }}>{frameNote}</div>
-        )}
+        {renderControls()}
       </div>
     );
   };
 
   const showFilter = !live && samples.length > 0;
 
-  const showPlayheadCommon = !live && (segments.length > 0 || markCount > 0);
-  const seekCommon = !live && segments.length > 0 ? seekTo : undefined;
+  const showPlayheadCommon = !live && (segments.length > 0 || markCount > 0 || detached);
+  const seekCommon = !live && segments.length > 0 ? seekFromUi : undefined;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* 左列：三张时序图（主曲线 / 分类内存 / 帧耗时）垂直堆叠，同宽 + 共享 X 边距 →
           同一采集时间点落在相同 X，playhead / 游标三图严格对齐，便于「FPS 掉 → 帧耗时飙 → 内存涨」对照看。
-          右列：录屏，sticky 随滚动常驻，拖任一图的时间轴都联动画面。 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
+          右列：录屏，sticky 随滚动常驻，拖任一图的时间轴都联动画面。弹出到独立窗后右列收起、图表铺满全宽，控制条移到图表下方。 */}
+      <div style={{ display: 'grid', gridTemplateColumns: detached ? '1fr' : 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: '16px', alignItems: 'start' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', minWidth: 0 }}>
           {/* 主曲线（FPS/CPU/GPU/电量/MEM）：相对盒 + 绝对填充承载，避免 SVG 在固定高度下塌缩。 */}
           <div style={{ position: 'relative', height: `${MAIN_CHART_HEIGHT}px` }}>
@@ -481,11 +639,15 @@ export function CaptureReport({ session, samples, live, elapsedMs, markers, onSa
           </div>
         </div>
 
-        {/* 录屏列：sticky 常驻，画面随时间轴联动。 */}
-        <div style={{ position: 'sticky', top: 0, alignSelf: 'start' }}>
-          {renderVideoArea()}
-        </div>
+        {/* 录屏列：sticky 常驻，画面随时间轴联动。弹出到独立窗后此列收起（控制条移到图表下方全宽呈现）。 */}
+        {!detached && (
+          <div style={{ position: 'sticky', top: 0, alignSelf: 'start' }}>
+            {renderVideoArea()}
+          </div>
+        )}
       </div>
+      {/* 弹出态：视频在副屏弹出窗，提示条 + 控制条作为全宽条放在图表下方。 */}
+      {detached && renderVideoArea()}
       {showFilter && (
         <CaptureFilterPanel
           conditions={filterConditions}

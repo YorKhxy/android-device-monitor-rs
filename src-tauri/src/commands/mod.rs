@@ -15,6 +15,7 @@ pub mod files;
 pub mod logcat;
 pub mod mirror;
 pub mod performance;
+pub mod popout;
 pub mod transfer;
 
 use serde_json::{json, Value};
