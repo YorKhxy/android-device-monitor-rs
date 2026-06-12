@@ -72,6 +72,12 @@ pub fn remote_path(device_id: &str, index: u32) -> String {
     format!("/sdcard/adm-capture-{}-{}.mp4", sanitize_segment(device_id), index)
 }
 
+/// scrcpy 含音录制的 ASCII 临时落点：scrcpy(原生 exe) 在 Windows 对非 ASCII 路径(中文安装目录)会失败，
+/// 故先录到系统临时目录(ASCII)，finalize 时再用 Rust fs 移到会话目录。spawn 与 finalize 须用同一路径。
+pub fn scrcpy_temp_path(device_id: &str, index: u32) -> PathBuf {
+    std::env::temp_dir().join(format!("adm-scrcpy-{}-{index}.mp4", sanitize_segment(device_id)))
+}
+
 /// 把设备端 screenrecord 瞬间失败的 stderr 翻译成可操作的中文指引（对齐 describeSegmentFailure）。
 fn describe_segment_failure(stderr: &str) -> String {
     let s = stderr.trim();
@@ -254,13 +260,31 @@ pub async fn pull_segment(
 ) {
     let file_name = format!("seg-{index}.mp4");
     let local = video_dir.join(&file_name);
-    let local_str = local.to_string_lossy().to_string();
 
-    if let Err(e) = exec_adb(&adb, &["-s", &device_id, "pull", &remote, &local_str], 60_000).await {
+    // ⚠️ adb 在 Windows 对非 ASCII 本地路径会静默失败（安装目录含中文如「安卓设备监控rs版」时录像拉不下来）。
+    // 故先 pull 到 ASCII 临时路径，再用 Rust fs 移到最终目录（Rust 正确处理 Unicode 路径）。
+    let tmp = std::env::temp_dir().join(format!("adm-pull-{}-{index}.mp4", sanitize_segment(&device_id)));
+    let tmp_str = tmp.to_string_lossy().to_string();
+
+    if let Err(e) = exec_adb(&adb, &["-s", &device_id, "pull", &remote, &tmp_str], 60_000).await {
         let _ = events.send(RecorderEvent::Error(e.message));
+        let _ = tokio::fs::remove_file(&tmp).await;
         return;
     }
     let _ = exec_adb(&adb, &["-s", &device_id, "shell", "rm", "-f", &remote], 8000).await;
+
+    // 临时文件 → 最终目录：先 rename（同盘快），失败（跨盘等）退回 copy+删。先确保目录存在。
+    if let Some(parent) = local.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if tokio::fs::rename(&tmp, &local).await.is_err() {
+        if let Err(e) = tokio::fs::copy(&tmp, &local).await {
+            let _ = events.send(RecorderEvent::Error(format!("移动录像分段到会话目录失败：{e}")));
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return;
+        }
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
 
     let size = tokio::fs::metadata(&local).await.map(|m| m.len()).unwrap_or(0);
     if size == 0 {
@@ -280,19 +304,39 @@ pub async fn pull_segment(
     let _ = events.send(RecorderEvent::SizeBytes(total));
 }
 
-/// scrcpy 路径段完成上报（T2.10）：段已由 scrcpy 直接录到本地 `video_dir/seg-N.mp4` 并 finalize，
-/// 无需 pull/删设备端临时文件；stat 本地大小，空段（被打断未写出/finalize 损坏成 0）清掉不上报，
-/// 有效段上报分段 + 累计体积。与 pull_segment 对齐，差别仅在不经设备端拉取。
+/// scrcpy 路径段完成上报（T2.10）：scrcpy 录到 ASCII 临时文件 `temp`（规避中文路径），这里用 Rust fs
+/// 移到会话目录 `video_dir/seg-N.mp4`（rename，跨盘退回 copy+删）再 stat。空段（被打断未写出/finalize 损坏成 0）
+/// 清掉不上报；有效段上报分段 + 累计体积。
 pub async fn finalize_local_segment(
     index: u32,
     start_ms: u64,
     end_ms: u64,
+    temp: PathBuf,
     video_dir: PathBuf,
     total_bytes: Arc<AtomicU64>,
     events: RecorderSender,
 ) {
     let file_name = format!("seg-{index}.mp4");
     let local = video_dir.join(&file_name);
+
+    // 临时文件不存在/空 = 段被打断未写出，清掉不上报。
+    let temp_size = tokio::fs::metadata(&temp).await.map(|m| m.len()).unwrap_or(0);
+    if temp_size == 0 {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return;
+    }
+    // 临时(ASCII) → 会话目录(可能含中文)：Rust fs 处理 Unicode 路径没问题。先确保目录存在。
+    if let Some(parent) = local.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if tokio::fs::rename(&temp, &local).await.is_err() {
+        if let Err(e) = tokio::fs::copy(&temp, &local).await {
+            let _ = events.send(RecorderEvent::Error(format!("移动含音录像分段到会话目录失败：{e}")));
+            let _ = tokio::fs::remove_file(&temp).await;
+            return;
+        }
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
 
     let size = tokio::fs::metadata(&local).await.map(|m| m.len()).unwrap_or(0);
     if size == 0 {

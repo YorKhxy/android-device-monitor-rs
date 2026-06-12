@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::capture_segment::{
-    assert_segment_alive, finalize_local_segment, pull_segment, remote_path,
+    assert_segment_alive, finalize_local_segment, pull_segment, remote_path, scrcpy_temp_path,
     signal_screenrecord_stop, signal_scrcpy_stop, spawn_scrcpy_segment, spawn_segment,
     RecorderEvent, RecorderSender, SpawnedSegment, FIRST_SEGMENT_PROBE_MS,
 };
@@ -46,7 +46,6 @@ impl RecordBackend {
         &self,
         adb: &Path,
         device_id: &str,
-        video_dir: &Path,
         index: u32,
         bit_rate: u32,
     ) -> Result<SpawnedSegment, AdbError> {
@@ -55,7 +54,8 @@ impl RecordBackend {
                 spawn_segment(adb, device_id, &remote_path(device_id, index), bit_rate).await
             }
             RecordBackend::ScrcpyAudio { scrcpy } => {
-                let path = video_dir.join(format!("seg-{index}.mp4"));
+                // scrcpy 录到 ASCII 临时路径（规避中文安装目录），finalize 时再移到 video_dir。
+                let path = scrcpy_temp_path(device_id, index);
                 spawn_scrcpy_segment(scrcpy, adb, device_id, &path, bit_rate).await
             }
         }
@@ -86,9 +86,15 @@ impl RecordBackend {
                 total,
                 events,
             )),
-            RecordBackend::ScrcpyAudio { .. } => {
-                tokio::spawn(finalize_local_segment(index, start_ms, end_ms, video_dir, total, events))
-            }
+            RecordBackend::ScrcpyAudio { .. } => tokio::spawn(finalize_local_segment(
+                index,
+                start_ms,
+                end_ms,
+                scrcpy_temp_path(&device_id, index),
+                video_dir,
+                total,
+                events,
+            )),
         }
     }
 
@@ -162,7 +168,7 @@ async fn run_loop(
         index += 1;
         let mut next: Option<SpawnedSegment> = None;
         if !stop_requested.load(Ordering::SeqCst) {
-            match backend.spawn(&adb, &device_id, &video_dir, index, bit_rate).await {
+            match backend.spawn(&adb, &device_id, index, bit_rate).await {
                 Ok(s) => {
                     // 二次检查：spawn 期间若 stop 触发，停止信号已广播，这段已被终结，补发一次。
                     if stop_requested.load(Ordering::SeqCst) {
@@ -222,7 +228,7 @@ pub async fn start(adb: &Path, input: StartCaptureInput) -> Result<(), AdbError>
     // 首段 + 探测：瞬间失败则直接 Err，不写入 active（净行为同原版「插入后失败再删除」）。
     let mut first = input
         .backend
-        .spawn(adb, &input.device_id, &input.video_dir, 0, bit_rate)
+        .spawn(adb, &input.device_id, 0, bit_rate)
         .await?;
     assert_segment_alive(&mut first, FIRST_SEGMENT_PROBE_MS).await?;
 
