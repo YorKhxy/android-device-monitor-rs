@@ -1092,13 +1092,9 @@ function SimpleApp() {
     else setError(res.errorMessage || 'WiFi \u8fde\u63a5\u5931\u8d25');
   };
 
-  // \u53d1\u73b0\u5217\u8868\u6392\u9664\u5df2\u8fde\u63a5\u8bbe\u5907\uff08\u6309\u5e8f\u5217\u53f7 / ip:\u7aef\u53e3\u5339\u914d\uff09\u2014\u2014\u8fde\u4e0a\u540e\u81ea\u52a8\u4ece\u5217\u8868\u6d88\u5931\u3002
-  const mdnsConnectedKeys = new Set<string>(devices.flatMap((d) => [d.serialNo, d.id].filter(Boolean) as string[]));
-  const visibleMdns = mdnsDevices.filter((m) => !(m.serial && mdnsConnectedKeys.has(m.serial)) && !mdnsConnectedKeys.has(m.target));
-
-  // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1amDNS \u5e7f\u64ad\u7684\u77ed id\uff08\u5982 adb-7e9d2ce\uff09\u5e38\u4e0e\u8bbe\u5907\u771f\u5b9e\u5e8f\u5217\u53f7\u4e0d\u4e00\u81f4\uff0c\u5148\u6309 IP \u628a\u53d1\u73b0\u9879\u5173\u8054\u5230
-  // \u5df2\u77e5\u8bbe\u5907\u7684\u771f\u5b9e SN\uff08\u5df2\u8fde WiFi \u8bbe\u5907 / \u5386\u53f2\u8bbe\u5907\uff09\uff0c\u518d\u6309\u771f\u5b9e SN \u53d6\u300c\u81ea\u5b9a\u4e49\u540d\u300d\uff1b\u53d6\u4e0d\u5230\u81ea\u5b9a\u4e49\u540d\u5c31\u663e\u793a\u771f\u5b9e SN\u3002
-  const resolveMdnsName = (d: MdnsDevice): string => {
+  // \u53d1\u73b0\u8bbe\u5907\u7684\u771f\u5b9e SN\uff1amDNS \u5e7f\u64ad\u7684\u77ed id\uff08\u5982 adb-7e9d2ce\uff09\u5e38\u4e0e\u8bbe\u5907\u771f\u5b9e\u5e8f\u5217\u53f7\u4e0d\u4e00\u81f4\uff0c\u5148\u6309 IP \u628a\u53d1\u73b0\u9879
+  // \u5173\u8054\u5230\u5df2\u77e5\u8bbe\u5907\u7684\u771f\u5b9e SN\uff08\u5df2\u8fde WiFi \u8bbe\u5907 / \u5386\u53f2\u8bbe\u5907\uff09\uff1b\u53d6\u4e0d\u5230\u5c31\u7528 mDNS \u7684\u77ed id\u3002
+  const resolveMdnsSn = (d: MdnsDevice): string => {
     const ip = (d.target || '').split(':')[0];
     let realSn = '';
     const conn = devices.find((dev) => dev.connectionType === 'wifi' && (dev.id || '').split(':')[0] === ip);
@@ -1108,6 +1104,21 @@ function SimpleApp() {
       if (hist?.serialNo && hist.serialNo !== 'Unknown') realSn = hist.serialNo;
     }
     if (!realSn) realSn = d.serial || '';
+    return realSn;
+  };
+
+  // \u53d1\u73b0\u5217\u8868\u6392\u9664\u5df2\u8fde\u63a5\u8bbe\u5907\uff08\u6309\u5e8f\u5217\u53f7 / ip:\u7aef\u53e3\u5339\u914d\uff09\u2014\u2014\u8fde\u4e0a\u540e\u81ea\u52a8\u4ece\u5217\u8868\u6d88\u5931\u3002
+  // \u53ea\u7559\u771f\u5b9e SN \u4ee5 PA \u5f00\u5934\u7684\u8bbe\u5907\uff08Pico\uff09\uff0c\u8fc7\u6ee4\u6389\u624b\u673a\u7b49\u5176\u5b83\u5c40\u57df\u7f51\u8bbe\u5907\u3002
+  const mdnsConnectedKeys = new Set<string>(devices.flatMap((d) => [d.serialNo, d.id].filter(Boolean) as string[]));
+  const visibleMdns = mdnsDevices.filter((m) =>
+    !(m.serial && mdnsConnectedKeys.has(m.serial)) &&
+    !mdnsConnectedKeys.has(m.target) &&
+    resolveMdnsSn(m).toUpperCase().startsWith('PA')
+  );
+
+  // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1a\u6309\u771f\u5b9e SN \u53d6\u300c\u81ea\u5b9a\u4e49\u540d\u300d\uff1b\u53d6\u4e0d\u5230\u81ea\u5b9a\u4e49\u540d\u5c31\u663e\u793a\u771f\u5b9e SN\u3002
+  const resolveMdnsName = (d: MdnsDevice): string => {
+    const realSn = resolveMdnsSn(d);
     const custom = (customDeviceNames[realSn] || (d.serial ? customDeviceNames[d.serial] : undefined))?.trim();
     return custom || realSn || d.name;
   };
@@ -3425,7 +3436,8 @@ function SimpleApp() {
             )}
           </div>
 
-          <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)', order: 4 }}>
+          {/* \u5386\u53f2\u8bbe\u5907\u533a\u5757\u5728 UI \u4e0a\u9690\u85cf\uff08historyDevices \u4ecd\u7528\u4e8e mDNS \u771f\u5b9e SN \u5173\u8054\uff0c\u903b\u8f91\u4fdd\u7559\uff09 */}
+          <div style={{ display: 'none', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)', order: 4 }}>
             <div className="seclabel">{'\u5386\u53f2\u8bbe\u5907'}</div>
             {offlineHistoryDevices.length === 0 ? (
               <div style={{ fontSize: '12px', color: 'var(--fg-tertiary)', lineHeight: 1.6 }}>
