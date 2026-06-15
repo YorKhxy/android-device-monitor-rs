@@ -53,7 +53,8 @@ export interface ElectronAPI {
     deviceId: string,
     minLevel?: 'V' | 'D' | 'I' | 'W' | 'E' | 'F',
     packageName?: string,
-    pid?: string
+    pid?: string,
+    includeHistory?: boolean
   ) => Promise<ElectronResult<undefined>>;
   stopLogcat: (deviceId: string) => Promise<ElectronResult<undefined>>;
   getPerformance: (deviceId: string) => Promise<ElectronResult<PerformanceMetrics>>;

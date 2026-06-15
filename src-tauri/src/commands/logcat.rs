@@ -63,6 +63,9 @@ pub async fn start_logcat(
     #[allow(unused_variables)] min_level: Option<String>,
     #[allow(unused_variables)] package_name: Option<String>,
     pid: Option<String>,
+    // 是否带设备当前缓冲里的历史（默认 true，捞得到连接瞬间已打的 MVXRSDK 等爆发日志）；
+    // 前端「包含历史」开关关掉时传 false → 只收开抓后的新日志。
+    include_history: Option<bool>,
 ) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
         None => return adb_not_found(),
@@ -70,7 +73,7 @@ pub async fn start_logcat(
     };
     let pid_num = pid.and_then(|s| s.trim().parse::<i64>().ok());
 
-    match logcat_stream::start(&app, &adb, &device_id, pid_num).await {
+    match logcat_stream::start(&app, &adb, &device_id, pid_num, include_history.unwrap_or(true), false).await {
         Ok(()) => json!({ "success": true }),
         Err(e) => json!({ "success": false, "error": e }),
     }

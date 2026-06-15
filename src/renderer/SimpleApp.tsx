@@ -322,6 +322,9 @@ function SimpleApp() {
   const [showLogPackageDropdown, setShowLogPackageDropdown] = useState(false);
   const [logPidFilter, setLogPidFilter] = useState('');
   const [useRegexSearch, setUseRegexSearch] = useState(false);
+  // 开抓时是否带设备当前缓冲里的历史。默认 true：捞得到「连接瞬间」等爆发日志(如 MVXRSDK)，与 Android Studio 一致。
+  // 关掉则只收开抓后的新日志(后端加 -T)。注:历史能否捞到还取决于设备 logcat 缓冲是否已被挤掉(已把缓冲调大到 16M)。
+  const [logIncludeHistory, setLogIncludeHistory] = useState(true);
   const [pausedLogDeviceIds, setPausedLogDeviceIds] = useState<Set<string>>(() => new Set());
   const [selectedLogEntry, setSelectedLogEntry] = useState<LogEntry | null>(null);
   const [error, setError] = useState('');
@@ -540,6 +543,27 @@ function SimpleApp() {
     batchUpdateSizeRef.current = batchUpdateSize;
   }, [batchUpdateSize]);
 
+  // 渲染触发限频：入库(store.append)每批都做(便宜)，但 logVersion 的 bump——它会触发对最多 2 万条整体
+  // 重跑 filteredLogs/重算行高/重渲染，很重——节流到 ~3 次/秒。否则高频设备(启动应用瞬间数万行/秒)下
+  // 每批都重渲染会占满主线程，事件处理饿死 → UI「不增长」假死。尾随定时器保证洪流停后最终态也能刷出。
+  const logRenderThrottleRef = useRef<{ last: number; timer: number | null }>({ last: 0, timer: null });
+  const bumpLogVersionThrottled = useCallback(() => {
+    const t = logRenderThrottleRef.current;
+    const now = Date.now();
+    const since = now - t.last;
+    const MIN_INTERVAL = 300;
+    if (since >= MIN_INTERVAL) {
+      t.last = now;
+      setLogVersion(version => version + 1);
+    } else if (t.timer === null) {
+      t.timer = window.setTimeout(() => {
+        t.timer = null;
+        t.last = Date.now();
+        setLogVersion(version => version + 1);
+      }, MIN_INTERVAL - since);
+    }
+  }, []);
+
   const flushDeviceLogBuffer = useCallback((deviceId: string) => {
     const state = logStatesRef.current.get(deviceId);
     if (!state) return;
@@ -549,14 +573,14 @@ function SimpleApp() {
       state.flushTimer = null;
       return;
     }
-    
+
     state.store.append(buffer);
-    setLogVersion(version => version + 1);
-    
+    bumpLogVersionThrottled();
+
     state.buffer = [];
     state.updateScheduled = false;
     state.flushTimer = null;
-  }, []);
+  }, [bumpLogVersionThrottled]);
 
   const enqueueLogEntries = useCallback((entries: LogEntry[]) => {
     if (entries.length === 0) {
@@ -1359,13 +1383,12 @@ function SimpleApp() {
         return next;
       });
     } else {
-      const sourcePid = logPidFilter.trim() || undefined;
-      // 抓取恒定按 all levels（*:V），不受日志等级下拉框限制——等级只做显示筛选（见 filteredLogs）。
-      // 这样切换等级无需重新采集，也不会因选了高等级而漏抓低等级日志。
+      // 采集端全量抓取，绝不下传任何过滤条件——等级/包名/PID 一律只做前端「显示筛选」(见 filteredLogs)，
+      // 不决定「抓哪些」。理由：① 抓取恒按 all levels(*:V)，切等级无需重采、也不漏低等级；② 包名不下传，
+      // 否则 tag/正文不含包名的 SDK/独立进程日志会被降噪(搜 mvxrsdk 搜不到)；③ PID 也不下传 adb --pid=，
+      // 否则只录该进程、其余日志连磁盘都不录、事后也搜不到。改 PID/包名/等级都即时反映在 UI，无需重新抓取。
       const sourceLevel: LogEntry['level'] = 'V';
-      // 与老工具对齐：采集端全量抓取，绝不把包名下传给采集端按包名丢弃——包名仅作前端显示筛选与
-      // 「按包名导出」。否则 SDK/独立进程日志（tag、正文都不含包名）会被降噪，前端搜不到（搜 mvxrsdk 搜不到）。
-      const result = await window.electronAPI!.startLogcat(selectedDevice.id, sourceLevel, undefined, sourcePid);
+      const result = await window.electronAPI!.startLogcat(selectedDevice.id, sourceLevel, undefined, undefined, logIncludeHistory);
       if (result.success) {
         state.running = true;
         state.paused = false;
@@ -2730,6 +2753,18 @@ function SimpleApp() {
         >
           {isSelectedLogcatRunning ? '\u505c\u6b62' : '\u5f00\u59cb'}
         </button>
+        <label
+          data-tip={'\u5f00\u6293\u65f6\u5e26\u5165\u8bbe\u5907\u5f53\u524d\u7f13\u51b2\u91cc\u7684\u5386\u53f2\u65e5\u5fd7\uff08\u635e\u5f97\u5230\u201c\u8fde\u63a5\u77ac\u95f4\u201d\u7b49\u5df2\u6253\u8fc7\u7684\u7206\u53d1\u65e5\u5fd7\uff0c\u5982 MVXRSDK\uff0c\u4e0e Android Studio \u4e00\u81f4\uff09\u3002\u5173\u6389\u5219\u53ea\u6536\u5f00\u6293\u540e\u7684\u65b0\u65e5\u5fd7\u3002\u8fd0\u884c\u4e2d\u4e0d\u53ef\u6539\uff0c\u4e0b\u6b21\u5f00\u6293\u751f\u6548\u3002'}
+          style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: 'var(--fg-secondary)', cursor: isSelectedLogcatRunning ? 'not-allowed' : 'pointer', opacity: isSelectedLogcatRunning ? 0.5 : 1 }}
+        >
+          <input
+            type="checkbox"
+            checked={logIncludeHistory}
+            disabled={isSelectedLogcatRunning}
+            onChange={(e) => setLogIncludeHistory(e.target.checked)}
+          />
+          {'\u5305\u542b\u5386\u53f2'}
+        </label>
         <button
           onClick={toggleSelectedDevicePause}
           disabled={!isSelectedLogcatRunning}

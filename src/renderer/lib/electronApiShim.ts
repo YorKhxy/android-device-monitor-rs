@@ -50,8 +50,8 @@ const api: ElectronAPI = {
   connectUSB: () => call('connect_usb'),
 
   // —— 日志 ——
-  startLogcat: (deviceId, minLevel, packageName, pid) =>
-    call('start_logcat', { deviceId, minLevel, packageName, pid }),
+  startLogcat: (deviceId, minLevel, packageName, pid, includeHistory) =>
+    call('start_logcat', { deviceId, minLevel, packageName, pid, includeHistory }),
   stopLogcat: (deviceId) => call('stop_logcat', { deviceId }),
 
   // —— 性能/采集 ——

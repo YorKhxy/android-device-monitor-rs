@@ -30,6 +30,9 @@ const BATCH_MAX: usize = 200; // 单批上限，达到即 flush。
 const FLUSH_MS: u64 = 250; // 定时 flush 间隔（不足一批也按节奏推，保证实时性）。
 const QUEUE_CAP: usize = 1000; // 缓冲安全上限（即时 200 flush 下天然不会触达，超出丢最旧兜底）。
 const PID_REFRESH_MS: u128 = 2000; // PID→包名缓存刷新间隔（与老工具 logcatPidPackageRefreshIntervalMs 一致）。
+// 「包含历史」开抓时只回灌最近这么多行(有界)：够带上刚刚的爆发日志，又不会让高频设备的海量历史冲爆 UI。
+// 想要更久远的历史用「导出设备缓冲」(走文件，不经 UI)。
+const HISTORY_TAIL_LINES: u32 = 2000;
 
 // 注：不再做后端「每秒最多 N 条」的丢行限流。老工具 maxLogCallbacksPerSecond 限的是「回调次数」
 // （一次回调带一批行），本实现已用 BATCH_MAX/FLUSH_MS 批量 emit + 前端批处理双重节流等效达成。
@@ -115,26 +118,51 @@ fn push_entry(
     pid_pkg: &HashMap<i64, String>,
     buffer: &mut Vec<LogEntry>,
     app: &AppHandle,
+    last_emit: &mut Instant,
 ) {
     if let Some(pkg) = pid_pkg.get(&entry.process_id) {
         entry.package_name = Some(pkg.clone());
     }
-    // 完整日志落盘：解析后单行带归属包名列，与老工具 fullLogRecorder.write 同格式（全量、全等级）。
+    // 完整日志落盘：解析后单行带归属包名列，与老工具 fullLogRecorder.write 同格式（全量、全等级，**逐行不丢**）。
     full_log_recorder::append(device_id, entry_id, &format_line(&entry));
-    // UI 推送：全量入缓冲，不按行数丢弃（节流交给批量 emit + 前端批处理）。
+    // 入 UI 缓冲。内存兜底：超 2×QUEUE_CAP 才批量裁到 QUEUE_CAP（摊销 O(1)/条，避免每条 remove(0) 的 O(n) 搬移），
+    // 丢最旧、留最新——完整日志已落盘，UI 不追求全量。
     buffer.push(entry);
-    if buffer.len() > QUEUE_CAP {
-        buffer.remove(0); // 兜底：缓冲无界增长时丢最旧、留最新（保证 UI 始终显示最新日志）。
+    if buffer.len() > QUEUE_CAP * 2 {
+        let excess = buffer.len() - QUEUE_CAP;
+        buffer.drain(0..excess);
     }
-    if buffer.len() >= BATCH_MAX {
+    // UI 推送**限频**：攒够一批且距上次 emit ≥ FLUSH_MS 才推。否则启动重型应用瞬间 4 万行/秒会变成每秒数百次
+    // emit，把前端冲垮卡死（看起来就像"抓取被打断"）。限频后洪流下也只 ~每 250ms 推一批 ≤2×QUEUE_CAP 条最新。
+    if buffer.len() >= BATCH_MAX && last_emit.elapsed() >= Duration::from_millis(FLUSH_MS) {
         flush(app, buffer);
+        *last_emit = Instant::now();
     }
 }
 
 /// 启动某设备的 logcat 流。已在跑则先停旧（参数可能变），再起新。
 /// `pid`：前端显式填的数字 PID → adb `--pid=`（采集端限制，与老工具 sourcePid 同）；不填则全量抓。
-pub async fn start(app: &AppHandle, adb: &Path, device_id: &str, pid: Option<i64>) -> Result<(), String> {
+/// `include_history`：true=开抓即带设备当前缓冲里的历史（捞得到「连接瞬间」等爆发日志，如 MVXRSDK，
+/// 与 Android Studio 行为一致）；false=加 `-T <开抓时刻>` 只收新日志、不回灌历史。
+/// `is_restart`：断流自动重连续抓时为 true → 完整日志追加不清空（保留断流前内容）；用户开抓为 false → truncate。
+///
+/// 注：返回**显式装箱的 Future** 而非 `async fn`——reader_loop 在异常 EOF 时会回调本函数自动重连，
+/// 二者互为 async 递归会让编译器算不出 `async fn` 的 opaque 返回类型(cycle)；显式 `Box<dyn Future>` 打破该环。
+#[allow(clippy::type_complexity)]
+pub fn start<'a>(
+    app: &'a AppHandle,
+    adb: &'a Path,
+    device_id: &'a str,
+    pid: Option<i64>,
+    include_history: bool,
+    is_restart: bool,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
     stop(device_id).await; // 幂等：换参重启。
+
+    // 调大设备 logcat 环形缓冲（默认仅 256KiB，高频设备几分钟就把爆发日志挤没——典型：连接瞬间的
+    // MVXRSDK 一会儿就被冲掉、事后捞不到）。16M 让历史留存久得多。best-effort：失败/不支持不阻断抓取。
+    let _ = exec_adb_capture(adb, &["-s", device_id, "logcat", "-G", "16M"], 5_000).await;
 
     let mut args: Vec<String> = vec![
         "-s".into(),
@@ -146,17 +174,25 @@ pub async fn start(app: &AppHandle, adb: &Path, device_id: &str, pid: Option<i64
     if let Some(p) = pid {
         args.push(format!("--pid={p}"));
     }
-    // 只抓「从开抓这一刻起」的日志，不回灌设备 ring buffer 里的历史（否则每次开抓都把上次抓过的
-    // 旧日志重新导一遍）。-T 用设备自身时钟取「现在」——与 logcat 时间戳同源、同时区，避免 PC
-    // 与设备时钟偏差导致漏/多。取设备时间失败 → 兜底 `-T 1`（只回最近 1 行，同样不灌历史）。
-    let since = exec_adb_capture(adb, &["-s", device_id, "shell", "date '+%m-%d %H:%M:%S.000'"], 5_000)
-        .await
-        .ok()
-        .filter(|o| o.success)
-        .map(|o| o.stdout.trim().to_string())
-        .filter(|s| !s.is_empty());
-    args.push("-T".into());
-    args.push(since.unwrap_or_else(|| "1".into()));
+    // 两种模式都用 -T 限定起点，且**绝不把整个设备缓冲灌进实时面板**——高频设备(如 Pico，~500 行/秒)
+    // 缓冲调大后可达十几万行，一次性涌入会冲爆前端(自动滚动反复强制布局 → 卡死、实时也进不来)。
+    // 想查"很久以前"的日志(如几分钟前的连接 MVXRSDK)用「导出设备缓冲」——那条走文件、不经 UI、不会卡。
+    if include_history {
+        // 带历史：只取最近 HISTORY_TAIL 行(有界，含刚刚的爆发日志)再续接实时；不取整缓冲。
+        args.push("-T".into());
+        args.push(HISTORY_TAIL_LINES.to_string());
+    } else {
+        // 只收新日志：-T <设备当前时刻>（设备自身时钟，与 logcat 时间戳同源同时区，避免 PC 时钟偏差）；
+        // 取时间失败兜底 `-T 1`（只回最近 1 行）。
+        let since = exec_adb_capture(adb, &["-s", device_id, "shell", "date '+%m-%d %H:%M:%S.000'"], 5_000)
+            .await
+            .ok()
+            .filter(|o| o.success)
+            .map(|o| o.stdout.trim().to_string())
+            .filter(|s| !s.is_empty());
+        args.push("-T".into());
+        args.push(since.unwrap_or_else(|| "1".into()));
+    }
     args.push("*:V".into());
 
     let mut cmd = Command::new(adb);
@@ -185,8 +221,9 @@ pub async fn start(app: &AppHandle, adb: &Path, device_id: &str, pid: Option<i64
     let app = app.clone();
     let adb = adb.to_path_buf();
     let dev = device_id.to_string();
-    tokio::spawn(reader_loop(app, adb, dev, entry_id, stdout));
+    tokio::spawn(reader_loop(app, adb, dev, entry_id, stdout, pid, is_restart));
     Ok(())
+    })
 }
 
 /// 后台读取循环：逐行解析 → 补归属包名 → 落盘 + 缓冲 → 批量推送；EOF（进程结束）收尾并清条目。
@@ -196,32 +233,37 @@ async fn reader_loop(
     device_id: String,
     entry_id: u64,
     stdout: tokio::process::ChildStdout,
+    pid: Option<i64>,
+    is_restart: bool,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     let mut parser = LogcatParser::new(&device_id);
     let mut buffer: Vec<LogEntry> = Vec::new();
+    let mut last_emit = Instant::now(); // UI emit 限频锚点（push_entry 与 ticker 共用）。
     let mut ticker = tokio::time::interval(Duration::from_millis(FLUSH_MS));
 
-    // 完整日志录制（T4-5）：开流即 truncate 重建落盘文件，「从监控第一行」。失败不阻断抓取。
-    let _ = full_log_recorder::begin(&device_id, entry_id);
+    // 完整日志录制（T4-5）：用户开抓 truncate「从监控第一行」；自动重连(is_restart)追加、保留断流前内容。失败不阻断抓取。
+    let _ = full_log_recorder::begin(&device_id, entry_id, is_restart);
 
     // PID→归属包名缓存：开流先建一次，之后周期刷新（应对目标 App 重启换 pid）。
     let mut pid_pkg = refresh_pid_package_cache(&adb, &device_id).await;
     let mut last_pid_refresh = Instant::now();
+    let mut lines_read: u64 = 0; // 读到的行数：EOF 时据此判断是否自动重连（读 0 行就 EOF 视为设备断开，不重连防死循环）。
 
     loop {
         tokio::select! {
             line = lines.next_line() => {
                 match line {
                     Ok(Some(raw)) => {
+                        lines_read += 1;
                         if let Some(entry) = parser.push_line(&raw) {
-                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app);
+                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app, &mut last_emit);
                         }
                     }
                     _ => {
                         // EOF / 读错误：进程结束。收尾残留条目后推完最后一批。
                         if let Some(entry) = parser.flush() {
-                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app);
+                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app, &mut last_emit);
                         }
                         flush(&app, &mut buffer);
                         break;
@@ -230,6 +272,7 @@ async fn reader_loop(
             }
             _ = ticker.tick() => {
                 flush(&app, &mut buffer);
+                last_emit = Instant::now(); // 与 push_entry 限频共用锚点：低频时由 ticker 及时推、不丢实时性。
                 full_log_recorder::flush(&device_id, entry_id); // 定时刷盘，保证导出拿到最新。
                 if last_pid_refresh.elapsed().as_millis() >= PID_REFRESH_MS {
                     pid_pkg = refresh_pid_package_cache(&adb, &device_id).await;
@@ -242,8 +285,36 @@ async fn reader_loop(
     // 完整日志录制收尾（id 比对，drop BufWriter 自动 flush）。
     full_log_recorder::end(&device_id, entry_id);
 
-    // 仅当注册表里仍是「本条」流时才清（id 比对，防误删已被 stop 后重启的同设备 live entry）。
-    if let Ok(mut map) = streams().lock() {
+    // 「本条流是否仍在册」：在册 = 非用户 stop、也没被新流替换 → 属于异常 EOF（多半是启动重型应用的洪流背压
+    // 或 WiFi 抖动把流压断）。此时若确实抓到过日志，则自动重连续抓——否则采集就这么默默死了、UI 不再增长。
+    let still_ours = streams()
+        .lock()
+        .ok()
+        .map(|m| m.get(&device_id).map(|e| e.id) == Some(entry_id))
+        .unwrap_or(false);
+
+    if still_ours && lines_read > 0 {
+        // 自动重连：延迟一下再起（避让洪流峰值），只收新日志(include_history=false，不重灌历史)、
+        // 完整日志追加(is_restart=true，不清空)。重连前复检在册条目，避开「这段时间内用户点了停止」的竞态。
+        // 读 0 行就 EOF（设备断开/不可达）不走这里 → 不会无限重连。
+        let app2 = app.clone();
+        let adb2 = adb.clone();
+        let dev2 = device_id.clone();
+        let stale_id = entry_id;
+        // 注意：本条在册条目暂不移除（其 child 已死），留作竞态复检锚点；重连的 start() 会先 stop() 清掉它再注册新流。
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let user_stopped = streams()
+                .lock()
+                .ok()
+                .map(|m| m.get(&dev2).map(|e| e.id) != Some(stale_id))
+                .unwrap_or(true);
+            if !user_stopped {
+                let _ = start(&app2, &adb2, &dev2, pid, false, true).await;
+            }
+        });
+    } else if let Ok(mut map) = streams().lock() {
+        // 用户主动停止 / 已被新流替换 / 设备断开 → 清掉在册条目（仅当仍是本条）。
         if map.get(&device_id).map(|e| e.id) == Some(entry_id) {
             map.remove(&device_id);
         }

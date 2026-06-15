@@ -36,11 +36,18 @@ pub fn log_path(device_id: &str) -> PathBuf {
     device_logs_dir().join(format!("{}.log", sanitize(device_id)))
 }
 
-/// 开始录制：建 device-logs/ 目录，truncate 重建该设备日志文件，登记 writer。失败返回 Err（调用方记录但不阻断抓取）。
-pub fn begin(device_id: &str, id: u64) -> std::io::Result<()> {
+/// 开始录制：建 device-logs/ 目录，登记 writer。失败返回 Err（调用方记录但不阻断抓取）。
+/// `append=false`（用户主动开抓）→ truncate 重建文件「从监控第一行」；
+/// `append=true`（断流自动重连续抓）→ 追加写，保留断流前已落盘内容、不丢。
+pub fn begin(device_id: &str, id: u64, append: bool) -> std::io::Result<()> {
     let dir = device_logs_dir();
     std::fs::create_dir_all(&dir)?;
-    let file = File::create(log_path(device_id))?; // create = truncate 已存在。
+    let path = log_path(device_id);
+    let file = if append {
+        std::fs::OpenOptions::new().create(true).append(true).open(&path)?
+    } else {
+        File::create(&path)? // create = truncate 已存在。
+    };
     if let Ok(mut map) = recorders().lock() {
         map.insert(device_id.to_string(), Recorder { id, writer: BufWriter::new(file) });
     }
