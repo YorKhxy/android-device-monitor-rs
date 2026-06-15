@@ -2291,6 +2291,18 @@ function SimpleApp() {
     }
   };
 
+  // \u4e00\u6b21\u6027\u5bfc\u51fa\u8bbe\u5907\u5f53\u524d logcat \u7f13\u51b2\uff08\u542b\u5f00\u6293\u524d\u7684\u5386\u53f2\uff09\uff1a\u5b9e\u65f6\u6293\u53d6\u53ea\u6536\u5f00\u6293\u540e\u7684\u65b0\u65e5\u5fd7\uff0c\u6b64\u6309\u94ae logcat -d \u5168\u91cf dump\u3002
+  const exportDeviceLogBuffer = async () => {
+    if (!hasElectronAPI() || !selectedDevice) return;
+    const result = await window.electronAPI!.exportDeviceLogBuffer(selectedDevice.id);
+    if (result.success) {
+      setError('');
+      setLastExportedLogPath(result.data || null);
+    } else if (result.error !== '\u53d6\u6d88\u5bfc\u51fa') {
+      setError(result.error || '\u5bfc\u51fa\u8bbe\u5907\u65e5\u5fd7\u7f13\u51b2\u5931\u8d25');
+    }
+  };
+
   const showCrashAndAnrLogs = () => {
     setFilterLevel('E');
     setUseRegexSearch(false);
@@ -2737,6 +2749,7 @@ function SimpleApp() {
         <button onClick={exportVisibleLogs} data-tip={'导出当前可见 / 筛选后的日志（受等级、搜索与显示上限影响）'} className="btn sm secondary">{'\u5bfc\u51fa'}</button>
         <button onClick={exportFullLogs} data-tip={'从监控第一行到当前的完整原始日志（全等级，不受 2 万条上限与筛选影响）'} className="btn sm secondary">{'\u5bfc\u51fa\u5b8c\u6574\u65e5\u5fd7'}</button>
         <button onClick={exportFullLogsByPackage} data-tip={'\u5728\u5b8c\u6574\u539f\u59cb\u65e5\u5fd7\u4e0a\uff0c\u7528\u300c\u5e94\u7528/\u5305\u540d\u300d\u91cc\u586b\u7684\u5305\u540d\u5173\u8054\u8fc7\u6ee4\uff0c\u5207\u51fa\u4e00\u4efd\u5b8c\u6574\u5b50\u96c6\uff08\u591a\u884c\u5806\u6808\u6574\u6761\u4fdd\u7559\uff0c\u4e0d\u91cd\u65b0\u91c7\u96c6\uff09'} className="btn sm secondary">{'\u6309\u5305\u540d\u5bfc\u51fa\u5b8c\u6574\u65e5\u5fd7'}</button>
+        <button onClick={exportDeviceLogBuffer} data-tip={'\u4e00\u6b21\u6027\u628a\u8bbe\u5907\u5f53\u524d logcat \u7f13\u51b2\u5168\u91cf dump \u4e0b\u6765\uff08\u542b\u5f00\u6293\u524d\u5df2\u53d1\u751f\u7684\u5386\u53f2\uff09\uff0c\u7528\u4e8e\u6293\u53d6\u300c\u6253\u5f00\u76d1\u63a7\u4e4b\u524d\u300d\u7684\u65e5\u5fd7\uff1b\u4e0d\u4f9d\u8d56\u5b9e\u65f6\u91c7\u96c6'} className="btn sm secondary">{'\u5bfc\u51fa\u8bbe\u5907\u7f13\u51b2'}</button>
         {lastExportedLogPath && (
           <button
             onClick={async () => {

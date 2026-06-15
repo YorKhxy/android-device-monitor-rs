@@ -13,8 +13,9 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::adb::binary;
 use crate::adb::error::{classify_adb_error, AdbError};
-use crate::adb::logcat_parser::{format_entry, LogEntry};
+use crate::adb::logcat_parser::{format_entry, format_line, LogEntry, LogcatParser};
 use crate::adb::logcat_stream;
+use crate::adb::manager::exec_adb_capture;
 use crate::logging::full_log_recorder;
 
 fn adb_not_found() -> Value {
@@ -199,6 +200,75 @@ pub async fn export_full_logs_by_package(app: AppHandle, device_id: String, pack
         // 0 命中：不落空文件（与老工具「删空文件」终态一致），提示无匹配。
         return json!({ "success": false, "error": format!("「{pkg}」没有匹配到任何完整日志") });
     }
+    match tokio::fs::write(&path, text).await {
+        Ok(()) => json!({ "success": true, "data": path }),
+        Err(e) => export_err("写入日志文件失败", e.to_string()),
+    }
+}
+
+/// 一次性导出设备**当前 logcat 缓冲（含开抓前的历史）**。与实时抓取互补：实时抓取用 `-T` 只收开抓
+/// 那一刻起的新日志（不回灌历史），而此命令用 `logcat -d` 全量 dump 设备 ring buffer 现存的全部行
+/// （全等级 `*:V`、含历史），供事后排查「打开监控之前就已发生」的日志（如先崩溃后才开监控）。
+/// 输出为原始 `-v long` 文本，不经解析/筛选，与实时面板的格式一致。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn export_device_log_buffer(app: AppHandle, device_id: String) -> Value {
+    let adb = match binary::resolve_adb_path(&app) {
+        None => return adb_not_found(),
+        Some(p) => p,
+    };
+    // 先 dump（捕获「点击那一刻」的缓冲，不受后续保存对话框耗时影响）。-d 立即返回，给足超时即可。
+    let captured = exec_adb_capture(&adb, &["-s", &device_id, "logcat", "-d", "-v", "long", "*:V"], 30_000).await;
+    let raw = match captured {
+        Ok(c) if c.success => c.stdout,
+        Ok(c) => {
+            let detail = if c.stderr.trim().is_empty() { "adb logcat -d 非零退出".to_string() } else { c.stderr };
+            return export_err("读取设备日志缓冲失败", detail);
+        }
+        Err(e) => return e.to_result(),
+    };
+    if raw.trim().is_empty() {
+        return json!({ "success": false, "error": "设备日志缓冲为空" });
+    }
+
+    // 与实时落盘录制同一套口径：解析 `-v long` → LogEntry → 补 PID 归属包名 → `format_line` 输出，
+    // 使本文件与「导出完整日志」逐字节同格式（`时间 设备id 包名|- pid/tid 级别/TAG: 正文`，多行堆栈整条续行）。
+    // 历史条目的 pid 可能已被回收，包名补全为当前 ps 快照的尽力而为（与录制端同限制）。
+    let pid_pkg = logcat_stream::refresh_pid_package_cache(&adb, &device_id).await;
+    let device_id_for_parse = device_id.clone();
+    let formatted = tokio::task::spawn_blocking(move || {
+        let mut parser = LogcatParser::new(&device_id_for_parse);
+        let mut entries: Vec<LogEntry> = Vec::new();
+        for line in raw.lines() {
+            if let Some(e) = parser.push_line(line) {
+                entries.push(e);
+            }
+        }
+        if let Some(e) = parser.flush() {
+            entries.push(e);
+        }
+        let mut out = String::new();
+        for mut e in entries {
+            if let Some(pkg) = pid_pkg.get(&e.process_id) {
+                e.package_name = Some(pkg.clone());
+            }
+            out.push_str(&format_line(&e));
+            out.push('\n');
+        }
+        out
+    })
+    .await;
+    let text = match formatted {
+        Ok(t) => t,
+        Err(e) => return export_err("解析日志缓冲失败", e.to_string()),
+    };
+    if text.trim().is_empty() {
+        return json!({ "success": false, "error": "设备日志缓冲为空" });
+    }
+
+    let path = match save_dialog(&app, "导出设备完整日志缓冲", &format!("android-device-buffer-{}.log", now_ms())).await {
+        Some(p) => p,
+        None => return json!({ "success": true, "data": null }),
+    };
     match tokio::fs::write(&path, text).await {
         Ok(()) => json!({ "success": true, "data": path }),
         Err(e) => export_err("写入日志文件失败", e.to_string()),

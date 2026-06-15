@@ -133,6 +133,7 @@ const api: ElectronAPI = {
   exportFullLogs: (deviceId) => call('export_full_logs', { deviceId }),
   exportFullLogsByPackage: (deviceId, packageName) =>
     call('export_full_logs_by_package', { deviceId, packageName }),
+  exportDeviceLogBuffer: (deviceId) => call('export_device_log_buffer', { deviceId }),
 
   // —— 事件订阅 ——
   onCaptureSample: (cb) => sub('capture_sample', cb),

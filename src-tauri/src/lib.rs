@@ -125,6 +125,7 @@ pub fn run() {
             commands::logcat::export_logs,
             commands::logcat::export_full_logs,
             commands::logcat::export_full_logs_by_package,
+            commands::logcat::export_device_log_buffer,
             commands::get_runtime_root,
         ])
         .build(tauri::generate_context!())

@@ -122,6 +122,7 @@ export interface ElectronAPI {
   exportLogs: (logs: LogEntry[]) => Promise<ElectronResult<string>>;
   exportFullLogs: (deviceId: string) => Promise<ElectronResult<string>>;
   exportFullLogsByPackage: (deviceId: string, packageName: string) => Promise<ElectronResult<string>>;
+  exportDeviceLogBuffer: (deviceId: string) => Promise<ElectronResult<string>>;
   exportPerformanceSession: (payload: PerformanceSessionExportPayload) => Promise<ElectronResult<string>>;
   onLogEntry: (callback: (entry: LogEntry) => void) => () => void;
   onLogBatch: (callback: (entries: LogEntry[]) => void) => () => void;
