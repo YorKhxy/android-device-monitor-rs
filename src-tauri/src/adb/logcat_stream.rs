@@ -1,6 +1,7 @@
-//! 常驻 logcat 流（T4-4，对应原 logcat 抓取逻辑）。每台设备一条 `adb logcat -v long [--pid=N] *:V` 长进程，
-//! 后台逐行解析成 `LogEntry`（多行堆栈合并），按「≤200 条/批、250ms、队列上限 1000」批量经 `log_batch`
+//! 常驻 logcat 流（T4-4，对应原 logcat 抓取逻辑）。每台设备一条 `adb logcat -v long [--pid=N] -T <开抓时刻> *:V`
+//! 长进程，后台逐行解析成 `LogEntry`（多行堆栈合并），按「≤200 条/批、250ms、队列上限 1000」批量经 `log_batch`
 //! event 推前端——既不漏低级别日志（恒 `*:V`），又不因逐条 emit 卡 UI。
+//! `-T` 取设备当前时刻，使每次开抓只收「从现在起」的新日志，不回灌设备 ring buffer 里的历史。
 //!
 //! 与老工具逐字节对齐：**采集端全量推送，绝不在后端按包名丢弃**——否则 SDK / 独立进程的日志（tag、正文
 //! 都不含目标包名）会被降噪掉，前端搜不到（典型：搜 mvxrsdk 搜不到）。后端只用 `ps -A -o PID,NAME` 反查把
@@ -73,7 +74,7 @@ fn normalize_android_package_name(process_name: &str) -> Option<String> {
 /// 用 `ps -A -o PID,NAME` 建 PID→归属包名映射。设备无 ps / 失败 → 空表（退化为无包名列，
 /// 不影响抓取）。与老工具 refreshLogcatPidPackageCache 同口径：跳表头，每行按空白切，首列 PID、
 /// 末列进程名，进程名经 `normalize_android_package_name` 归一化（非应用进程不入表 → 落盘列为 `-`）。
-async fn refresh_pid_package_cache(adb: &Path, device_id: &str) -> HashMap<i64, String> {
+pub(crate) async fn refresh_pid_package_cache(adb: &Path, device_id: &str) -> HashMap<i64, String> {
     let mut map = HashMap::new();
     let out = exec_adb_capture(adb, &["-s", device_id, "shell", "ps", "-A", "-o", "PID,NAME"], 5_000).await;
     if let Ok(o) = out {
@@ -145,6 +146,17 @@ pub async fn start(app: &AppHandle, adb: &Path, device_id: &str, pid: Option<i64
     if let Some(p) = pid {
         args.push(format!("--pid={p}"));
     }
+    // 只抓「从开抓这一刻起」的日志，不回灌设备 ring buffer 里的历史（否则每次开抓都把上次抓过的
+    // 旧日志重新导一遍）。-T 用设备自身时钟取「现在」——与 logcat 时间戳同源、同时区，避免 PC
+    // 与设备时钟偏差导致漏/多。取设备时间失败 → 兜底 `-T 1`（只回最近 1 行，同样不灌历史）。
+    let since = exec_adb_capture(adb, &["-s", device_id, "shell", "date '+%m-%d %H:%M:%S.000'"], 5_000)
+        .await
+        .ok()
+        .filter(|o| o.success)
+        .map(|o| o.stdout.trim().to_string())
+        .filter(|s| !s.is_empty());
+    args.push("-T".into());
+    args.push(since.unwrap_or_else(|| "1".into()));
     args.push("*:V".into());
 
     let mut cmd = Command::new(adb);
