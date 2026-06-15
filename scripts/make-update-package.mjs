@@ -46,7 +46,7 @@ function readNotes(version) {
   const fromArg = arg('notes');
   if (fromArg) return fromArg;
   // 读 release-notes.md 全文（含版本行 + 条目，由 gen-release-notes 生成），作为 latest.json 的 notes。
-  const notesFile = path.join(ROOT, 'release-notes.md');
+  const notesFile = path.join(ROOT, 'src-tauri', 'release-notes.md');
   if (fs.existsSync(notesFile)) {
     const full = fs.readFileSync(notesFile, 'utf8').trim();
     if (full) return full;

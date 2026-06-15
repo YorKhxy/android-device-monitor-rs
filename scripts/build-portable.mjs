@@ -104,6 +104,12 @@ function main() {
   fs.copyFileSync(EXE, path.join(appDir, `${appName}.exe`));
   copyDir(path.join(SRC_TAURI, 'platform-tools'), path.join(appDir, 'platform-tools'));
   copyDir(path.join(SRC_TAURI, 'scrcpy'), path.join(appDir, 'scrcpy'));
+  // 本版本更新日志（点版本号查看）：运行时按 exe 同目录解析 resource，平铺拷过去；
+  // 缺失（极少见，正常 npm run tauri build 已由 tauri.mjs 兜底生成）时跳过，不阻断绿色包。
+  {
+    const notesSrc = path.join(SRC_TAURI, 'release-notes.md');
+    if (fs.existsSync(notesSrc)) fs.copyFileSync(notesSrc, path.join(appDir, 'release-notes.md'));
+  }
   fs.writeFileSync(
     path.join(appDir, '使用说明.txt'),
     [

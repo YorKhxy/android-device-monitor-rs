@@ -44,7 +44,8 @@
     "resources": [
       "platform-tools/**/*",
       "scrcpy/**/*",
-      "update-config.json"
+      "update-config.json",
+      "release-notes.md"
     ],
     "icon": [
       "icons/32x32.png",

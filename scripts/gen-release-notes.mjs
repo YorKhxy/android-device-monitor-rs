@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const notesFile = path.join(projectRoot, 'release-notes.md');
+// 写到 src-tauri/（与 update-config.json 同位），才能被 tauri.conf 的 resources 打进安装包，
+// 供客户端运行时（updater::get_release_notes 读 resource_dir/release-notes.md）展示「本版本更新日志」。
+const notesFile = path.join(projectRoot, 'src-tauri', 'release-notes.md');
 const markerDir = path.join(projectRoot, 'update-releases');
 const markerFile = path.join(markerDir, '.last-release-commit');
 const NO_ANCHOR_LOG_COUNT = 20;

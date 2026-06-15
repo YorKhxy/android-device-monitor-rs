@@ -212,9 +212,21 @@ pub fn quit_and_install_update(app: AppHandle) -> Value {
     }
 }
 
-/// 应用内更新日志：返回最近一次状态里的 releaseNotes。
+/// 应用内「本版本更新日志」（点版本号查看）：优先读**打进安装包的 release-notes.md**（resource_dir）——
+/// 它是**当前已安装版本**的说明，无论是否有新版本都能看；读不到再退回最近一次检查更新缓存的 releaseNotes
+/// （即 feed 里「可用新版本」的说明）。修复点：旧实现只读缓存，更新到最新版后没有可用更新 → 缓存为空 → 显示「暂无」。
 #[tauri::command]
-pub fn get_release_notes() -> Value {
+pub fn get_release_notes(app: AppHandle) -> Value {
+    // ① 打进包的本版本说明。
+    if let Ok(dir) = app.path().resource_dir() {
+        if let Ok(s) = std::fs::read_to_string(dir.join("release-notes.md")) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return json!({ "success": true, "data": trimmed });
+            }
+        }
+    }
+    // ② 兜底：最近一次检查到的「可用新版本」说明。
     let notes = cached_status()
         .lock()
         .ok()

@@ -7,10 +7,24 @@
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// release-notes.md 是 tauri.conf 的必需 resource（缺则构建直接失败）。打热更包(build-update)会先跑
+// gen-release-notes 写真实内容；而 dev / 绿色包 / 裸 build 不生成它，故此处兜底确保文件存在：
+// 缺失就按当前版本号写个最小占位，绝不让构建因缺资源而失败。
+const notesFile = path.join(repoRoot, 'src-tauri', 'release-notes.md');
+if (!existsSync(notesFile)) {
+  let version = '';
+  try {
+    version = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version || '';
+  } catch {
+    /* 读不到版本就留空 */
+  }
+  writeFileSync(notesFile, `v${version}\n\n- 维护性更新\n`, 'utf8');
+}
 
 const cargoBin = process.env.CARGO_HOME
   ? path.join(process.env.CARGO_HOME, 'bin')
