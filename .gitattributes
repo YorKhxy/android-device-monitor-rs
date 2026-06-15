@@ -1,8 +1,11 @@
+# Default: normalize text to LF in repo (and on checkout).
+* text=auto eol=lf
+
 # Windows batch files must use CRLF. With LF, cmd.exe miscomputes file
 # offsets (assumes CRLF) and eats line-leading bytes each line
-# (e.g. "chcp 65001" runs as "5001"). Lock CRLF on checkout.
+# (e.g. "chcp 65001" runs as "5001"), breaking the script.
+# IMPORTANT: these MUST come AFTER the `*` rule above — gitattributes lets a
+# later matching pattern override an earlier one, so if `*` came last it would
+# reset eol back to lf for .bat/.cmd too (the original bug here).
 *.bat text eol=crlf
 *.cmd text eol=crlf
-
-# Everything else: normalize to LF in repo.
-* text=auto eol=lf
