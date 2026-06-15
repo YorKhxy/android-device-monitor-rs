@@ -29,33 +29,11 @@ const BATCH_MAX: usize = 200; // 单批上限，达到即 flush。
 const FLUSH_MS: u64 = 250; // 定时 flush 间隔（不足一批也按节奏推，保证实时性）。
 const QUEUE_CAP: usize = 1000; // 缓冲安全上限（即时 200 flush 下天然不会触达，超出丢最旧兜底）。
 const PID_REFRESH_MS: u128 = 2000; // PID→包名缓存刷新间隔（与老工具 logcatPidPackageRefreshIntervalMs 一致）。
-const MAX_CALLBACKS_PER_SEC: u32 = 1500; // 每秒最多推前端的条数（与老工具 maxLogCallbacksPerSecond 一致）。
 
-/// 整秒窗口限流（与老工具 callbackWindowStart/callbackCount 同口径）：每个整秒窗口最多放行 N 条。
-/// 一条（可能多行）日志计一次。**只限 UI 推送，不限落盘**——完整日志始终全量（老工具本意）。
-struct RateLimiter {
-    window_start: Instant,
-    count: u32,
-}
-
-impl RateLimiter {
-    fn new() -> Self {
-        Self { window_start: Instant::now(), count: 0 }
-    }
-
-    /// 放行返回 true；本秒已达上限返回 false（调用方据此只丢 UI 推送）。
-    fn allow(&mut self) -> bool {
-        if self.window_start.elapsed() >= Duration::from_secs(1) {
-            self.window_start = Instant::now();
-            self.count = 0;
-        }
-        if self.count >= MAX_CALLBACKS_PER_SEC {
-            return false;
-        }
-        self.count += 1;
-        true
-    }
-}
+// 注：不再做后端「每秒最多 N 条」的丢行限流。老工具 maxLogCallbacksPerSecond 限的是「回调次数」
+// （一次回调带一批行），本实现已用 BATCH_MAX/FLUSH_MS 批量 emit + 前端批处理双重节流等效达成。
+// 旧的按「日志行数/秒」丢弃会丢掉最新行：logcat 最旧在前，开流历史回灌或高频设备(>1500 行/秒)时，
+// 每秒配额被最旧的积压行吃光，最新实时行永远被丢，UI 卡在 ~1500 条老日志不再滚动（本次修复点）。
 
 struct StreamEntry {
     id: u64, // 唯一身份：EOF/stop 清理时比对，避免误删被重启替换的同设备 live entry。
@@ -136,20 +114,16 @@ fn push_entry(
     pid_pkg: &HashMap<i64, String>,
     buffer: &mut Vec<LogEntry>,
     app: &AppHandle,
-    limiter: &mut RateLimiter,
 ) {
     if let Some(pkg) = pid_pkg.get(&entry.process_id) {
         entry.package_name = Some(pkg.clone());
     }
-    // 完整日志落盘：解析后单行带归属包名列，与老工具 fullLogRecorder.write 同格式（全量、全等级，**先于且不受限流**）。
+    // 完整日志落盘：解析后单行带归属包名列，与老工具 fullLogRecorder.write 同格式（全量、全等级）。
     full_log_recorder::append(device_id, entry_id, &format_line(&entry));
-    // 限流只丢 UI 推送：本秒已达 1500 条上限则不推前端（落盘已完成，完整日志不丢）。
-    if !limiter.allow() {
-        return;
-    }
+    // UI 推送：全量入缓冲，不按行数丢弃（节流交给批量 emit + 前端批处理）。
     buffer.push(entry);
     if buffer.len() > QUEUE_CAP {
-        buffer.remove(0); // 兜底：丢最旧，防缓冲无界增长。
+        buffer.remove(0); // 兜底：缓冲无界增长时丢最旧、留最新（保证 UI 始终显示最新日志）。
     }
     if buffer.len() >= BATCH_MAX {
         flush(app, buffer);
@@ -214,7 +188,6 @@ async fn reader_loop(
     let mut lines = BufReader::new(stdout).lines();
     let mut parser = LogcatParser::new(&device_id);
     let mut buffer: Vec<LogEntry> = Vec::new();
-    let mut limiter = RateLimiter::new(); // 整秒窗口限流，只限 UI 推送、不限落盘。
     let mut ticker = tokio::time::interval(Duration::from_millis(FLUSH_MS));
 
     // 完整日志录制（T4-5）：开流即 truncate 重建落盘文件，「从监控第一行」。失败不阻断抓取。
@@ -230,13 +203,13 @@ async fn reader_loop(
                 match line {
                     Ok(Some(raw)) => {
                         if let Some(entry) = parser.push_line(&raw) {
-                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app, &mut limiter);
+                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app);
                         }
                     }
                     _ => {
                         // EOF / 读错误：进程结束。收尾残留条目后推完最后一批。
                         if let Some(entry) = parser.flush() {
-                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app, &mut limiter);
+                            push_entry(&device_id, entry_id, entry, &pid_pkg, &mut buffer, &app);
                         }
                         flush(&app, &mut buffer);
                         break;
