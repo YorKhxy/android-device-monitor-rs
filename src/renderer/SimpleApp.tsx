@@ -24,6 +24,7 @@ import {
   saveSearchHistory,
 } from './lib/searchHistoryStore';
 import { isTransferActive } from './lib/fileTransferManager';
+import { compileLogcatQuery } from './lib/logcatFilter';
 import {
   BATCH_UPDATE_DELAY,
   BATCH_UPDATE_SIZE,
@@ -2337,7 +2338,8 @@ function SimpleApp() {
   const showCrashAndAnrLogs = () => {
     setFilterLevel('E');
     setUseRegexSearch(false);
-    setSearchTerm('crash anr fatal exception');
+    // AS 查询语言：以 `|` 或组匹配任一关键词（新语义下空格=与，故用 | 表「或」）。
+    setSearchTerm('crash | anr | fatal | exception');
   };
 
   const levelPriority: Record<LogEntry['level'], number> = { V: 0, D: 1, I: 2, W: 3, E: 4, F: 5 };
@@ -2569,6 +2571,14 @@ function SimpleApp() {
   hasActiveLogFilterRef.current = hasActiveLogFilter;
   const allLogCount = currentLogState?.store.count || 0;
 
+  // package:mine 命中集合 = 当前设备第三方安装应用（installedPackages 即 pm list packages -3）。
+  const minePackagesSet = useMemo(() => new Set(installedPackages), [installedPackages]);
+  // 搜索框走 AS 查询语言（正则开关关时）；编译错误（如正则非法）抽出来供输入框旁提示。
+  const logQueryError = useMemo(
+    () => (useRegexSearch || !searchTerm.trim() ? null : compileLogcatQuery(searchTerm).error),
+    [useRegexSearch, searchTerm]
+  );
+
   const logLevelCounts = useMemo(() => {
     void logVersion;
     return currentLogState?.store.getCounts() || createLogCounts();
@@ -2592,14 +2602,13 @@ function SimpleApp() {
     }
 
     const store = currentLogState.store;
-    const searchTokens = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
-    const hasSearch = searchTokens.length > 0;
     const hasLevelFilter = filterLevel !== 'all';
     const tagFilter = logTagFilter.trim().toLowerCase();
     const packageFilter = logPackageFilter.trim().toLowerCase();
     const pidFilter = logPidFilter.trim();
-    let searchRegex: RegExp | null = null;
 
+    // 搜索框：正则开关开 → 旧行为(整串当一个正则，跨字段命中)；关 → AS 查询语言(默认)。
+    let searchRegex: RegExp | null = null;
     if (useRegexSearch && searchTerm.trim()) {
       try {
         searchRegex = new RegExp(searchTerm.trim(), 'i');
@@ -2607,6 +2616,8 @@ function SimpleApp() {
         searchRegex = null;
       }
     }
+    const compiledQuery = useRegexSearch ? null : compileLogcatQuery(searchTerm);
+    const mineCtx = { minePackages: minePackagesSet };
 
     // 单条匹配判定（逻辑与原全量版逐字一致，只是抽成函数供全量/增量两条路径共用）。
     const test = (log: LogEntry): boolean => {
@@ -2635,16 +2646,21 @@ function SimpleApp() {
         return false;
       }
 
-      if (!hasSearch && !searchRegex) {
-        return true;
+      // 搜索框约束。
+      if (useRegexSearch) {
+        if (!searchRegex) return true; // 无有效正则 → 不约束。
+        const haystack = `${log.message} ${log.tag} ${log.packageName || ''} ${log.processId}`.toLowerCase();
+        return searchRegex.test(haystack);
       }
-
-      const haystack = `${log.message} ${log.tag} ${log.packageName || ''} ${log.processId}`.toLowerCase();
-      return searchRegex ? searchRegex.test(haystack) : searchTokens.some(token => haystack.includes(token));
+      // AS 查询语言：空查询不约束；否则交给编译后的谓词（含 level/package:mine/正则/与或非）。
+      if (!compiledQuery || compiledQuery.isEmpty) return true;
+      return compiledQuery.test(log, mineCtx);
     };
 
     // 缓存有效性键：任一过滤条件/正则开关变了即失效 → 全量重建。
-    const key = JSON.stringify([searchTerm, useRegexSearch, filterLevel, tagFilter, packageFilter, pidFilter]);
+    // 用到 package:mine 时把 mine 集合大小并入键，设备切换/应用列表刷新致 mine 集合变化也能触发重建。
+    const mineSig = compiledQuery?.usesMine ? minePackagesSet.size : 0;
+    const key = JSON.stringify([searchTerm, useRegexSearch, filterLevel, tagFilter, packageFilter, pidFilter, mineSig]);
     const appendedTotal = store.appendedTotal;
     const droppedTotal = appendedTotal - store.count; // 当前最旧条目的全局序号（< 它的都已淘汰）。
     let cache = filteredCacheRef.current;
@@ -2689,7 +2705,7 @@ function SimpleApp() {
     }
 
     return cache.items.map(x => x.log);
-  }, [logVersion, currentLogState, hasActiveLogFilter, searchTerm, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch, selectedDeviceId]);
+  }, [logVersion, currentLogState, hasActiveLogFilter, searchTerm, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch, selectedDeviceId, minePackagesSet]);
 
   // 变高虚拟滚动：每条日志高度按行数变化，需先把当前可见列表物化成数组以便算累计偏移。
   const activeLogList = useMemo<LogEntry[]>(
@@ -2937,10 +2953,13 @@ function SimpleApp() {
         })()}
         <div className="field" style={{ width: '160px', flexShrink: 0 }}><input value={logTagFilter} onChange={(e) => setLogTagFilter(e.target.value)} placeholder={'\u6807\u7b7e'} /></div>
         <div style={{ position: 'relative', flex: '1 1 260px', minWidth: '220px' }}>
-          <div className="field" style={{ width: '100%' }}>
+          <div className="field" style={{ width: '100%', ...(logQueryError ? { borderColor: 'var(--danger)' } : null) }}>
           <input
             type="text"
-            placeholder={useRegexSearch ? '\u6b63\u5219\u641c\u7d22' : '\u641c\u7d22\u65e5\u5fd7'}
+            placeholder={useRegexSearch ? '\u6b63\u5219\u641c\u7d22' : 'AS \u67e5\u8be2\uff1atag: package:mine level:W -\u566a\u58f0 | \u6216'}
+            data-tip={useRegexSearch
+              ? '\u6574\u4e32\u5f53\u4e00\u4e2a\u6b63\u5219\uff0c\u8de8\u5b57\u6bb5\u5339\u914d'
+              : (logQueryError ?? 'AS \u67e5\u8be2\u8bed\u8a00\uff1akey:\u5b50\u4e32 key=\u7cbe\u786e key~\u6b63\u5219\uff1btag/package/process/pid/message/level/line\uff1b\u7a7a\u683c=\u4e0e\u3001|=\u6216\u3001-=\u975e\uff1bpackage:mine \u53ea\u770b\u81ea\u5bb6\u5e94\u7528')}
             value={searchTerm}
             // 每次输入变化都重新弹出并刷新匹配的历史（visibleSearchHistory 按输入联想过滤，无匹配则自动隐藏）。
             onChange={(e) => { setSearchTerm(e.target.value); setShowSearchHistory(true); }}
