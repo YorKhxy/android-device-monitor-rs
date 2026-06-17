@@ -87,6 +87,45 @@ fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, Strin
     }
 }
 
+/// 把「当前运行 exe 所在目录」钉进 NSIS 安装位置注册表键,确保热更永远装回**你正在运行的目录**,
+/// 杜绝因历史 perMachine/currentUser 安装把注册表值指到别处(C:\LOCALAPPDATA)而「热更跑到 C 盘装」。
+///
+/// 根因:NSIS passive 静默更新没有目录选择页,安装目标 `$INSTDIR` 完全由
+/// `HKCU\Software\androidtool\<产品名>` 的默认值决定(installer.nsi 的 `RestorePreviousInstallLocation`)。
+/// 这个值跟你实际启动的 exe 位置可能脱钩 → 看着像「版本回退 / 装到 C 盘」。每次启动用真实 exe 目录覆盖它
+/// = 自愈:点更新前注册表已 = 当前实例所在目录,热更必然装回原路径。**不是改 installMode 能解决的,本质是安装状态。**
+///
+/// 产品名常量须与 tauri.conf.json `productName` / NSIS `PRODUCTNAME` 完全一致(改名时同步)。
+#[cfg(windows)]
+fn pin_install_dir_to_registry() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const KEY: &str = r"HKCU\Software\androidtool\安卓设备监控rs版";
+    let dir = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    {
+        Some(d) => d,
+        None => return,
+    };
+    let dir_str = dir.to_string_lossy().to_string();
+    // /ve 写默认(未命名)值,/f 免确认;CREATE_NO_WINDOW(0x0800_0000)避免弹黑框。
+    // Command 经 CreateProcessW 以宽字符传参,中文产品名键名不受 cmd/GBK 影响(区别于 .bat 内容)。
+    let _ = Command::new("reg")
+        .args(["add", KEY, "/ve", "/d", &dir_str, "/f"])
+        .creation_flags(0x0800_0000)
+        .output();
+}
+
+#[cfg(not(windows))]
+fn pin_install_dir_to_registry() {}
+
+/// 启动时调用:把安装位置钉回当前 exe 目录(详见 [`pin_install_dir_to_registry`])。
+pub fn ensure_install_dir_pinned() {
+    pin_install_dir_to_registry();
+}
+
 /// 写缓存 + 经 update_status event 推前端。
 fn emit_status(app: &AppHandle, status: Value) {
     if let Ok(mut s) = cached_status().lock() {

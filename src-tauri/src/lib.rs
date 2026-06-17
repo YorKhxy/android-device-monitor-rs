@@ -27,6 +27,11 @@ pub fn run() {
         .setup(|app| {
             // 启动设备监控轮询，设备列表变化时 emit device_list_changed
             adb::monitor::start(app.handle().clone());
+            // 把热更安装位置钉回「当前 exe 所在目录」：NSIS passive 更新没有目录页，装哪全凭注册表值，
+            // 而该值可能脱钩到 C 盘。每次启动自愈一次 → 热更必然装回原路径，杜绝「跑到 C 盘装」。
+            // dev 期 exe 在 target/debug，写注册表无意义且会误导，仅 release 执行。
+            #[cfg(not(debug_assertions))]
+            updater::ensure_install_dir_pinned();
             // 启动即静默检查一次更新（对齐老工具 whenReady → checkForUpdates）：结果经 update_status event +
             // get_update_status 缓存推前端，「打开工具就提示有新版本」无需手动点。开发期跳过——无更新端点会报错刷屏。
             #[cfg(not(debug_assertions))]
