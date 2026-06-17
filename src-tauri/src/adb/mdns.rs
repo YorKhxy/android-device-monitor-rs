@@ -9,7 +9,9 @@
 //!   adb-XXXX               _adb-tls-connect._tcp  192.168.1.83:42137   ← 无线调试(已配对)
 //!   studio-abcd            _adb-tls-pairing._tcp  192.168.1.20:38911   ← 配对中(扫码后冒出)
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -72,22 +74,63 @@ pub fn parse_mdns_services(stdout: &str) -> Vec<MdnsService> {
     out
 }
 
-/// 跑 `adb mdns services` 并解析。失败（adb 不支持 mDNS 等）返回 Err。
+/// 跑一次 `adb mdns services` 并解析。失败（adb 不支持 mDNS 等）返回 Err。
 pub async fn discover(adb: &Path) -> Result<Vec<MdnsService>, AdbError> {
     let out = exec_adb(adb, &["mdns", "services"], 6000).await?;
     Ok(parse_mdns_services(&out.stdout))
 }
 
-/// 可连接的设备（非配对服务），**按主机 IP 去重**——同一台物理设备 = 局域网里一个 IP，它同时广播的
-/// _adb._tcp 与 _adb-tls-connect._tcp 共享同一 IP 会被正确合并（优先 _adb._tcp 的经典 5555，连接最稳）。
+/// 多拍扫描合并：mDNS 是**周期性广播 + 守护进程缓存快照**，单次 `adb mdns services` 只拿到这一瞬刚广播过的子集；
+/// 刚重启 adb server（如 app 重新构建/启动）缓存还是冷的，头几次可能为空 →「原本能扫的都没了」。
+/// 故连扫 `passes` 拍、每拍间隔 `gap_ms`，按 (服务类型, target) 跨拍并集去重，显著提命中率。
+/// best-effort：单拍失败不中断；仅当全部失败且无任何结果时才返回最后一次错误。
+pub async fn discover_merged(adb: &Path, passes: u8, gap_ms: u64) -> Result<Vec<MdnsService>, AdbError> {
+    let passes = passes.max(1);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut merged: Vec<MdnsService> = Vec::new();
+    let mut last_err: Option<AdbError> = None;
+    for i in 0..passes {
+        if i > 0 {
+            tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+        }
+        match discover(adb).await {
+            Ok(svcs) => {
+                for s in svcs {
+                    if seen.insert(format!("{}|{}", s.service_type, s.target)) {
+                        merged.push(s);
+                    }
+                }
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if merged.is_empty() {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
+    Ok(merged)
+}
+
+/// 去重键：(序列号, 主机IP) 复合。仅当两条记录**序列号与 IP 都相同**才视为同一设备合并。
+fn dedup_key(s: &MdnsService) -> (String, String) {
+    (s.serial.clone().unwrap_or_default(), s.host.clone())
+}
+
+/// 可连接的设备（非配对服务），按 **(序列号, IP) 复合键**去重——同一台设备同时广播的
+/// _adb._tcp 与 _adb-tls-connect._tcp 序列号与 IP 都相同会被合并（优先 _adb._tcp 经典 5555，连接最稳）。
 ///
-/// 为何不按序列号去重：Pico 等设备常有**重复/非唯一序列号**（同批刷机），按序列号去重会把序列号相同、
-/// IP 不同的两台真实设备误并成一台 → 表现为「同型号同设置、手动 IP 能连、就是扫不出来」。按 IP 去重免疫此坑。
+/// 为何用复合键而非单一键：
+/// - 单按序列号：Pico 等常有**重复/非唯一序列号**（同批刷机），会把序列号相同、IP 不同的两台真实设备误并
+///   成一台 →「同型号同设置、手动 IP 能连、就是扫不出来」。
+/// - 单按 IP：会把同 IP、序列号不同的两条记录误并（极端/未解析占位地址下），可能少显示。
+/// 复合键只比"纯序列号去重"**更细**，显示集合是其超集，**不会比原来少显示**（修我之前纯 IP 去重的回归），
+/// 同时重复序列号不同 IP 的两台都保留（修最初的 Pico 被吞）。
 pub fn connectable(services: Vec<MdnsService>) -> Vec<MdnsService> {
     let mut out: Vec<MdnsService> = Vec::new();
     for s in services.into_iter().filter(|s| !s.pairing) {
-        if let Some(existing) = out.iter_mut().find(|e| e.host == s.host) {
-            // 已有同 IP（同一设备的另一条服务记录）：若新条目是经典 _adb._tcp 而旧的不是，换成经典的。
+        if let Some(existing) = out.iter_mut().find(|e| dedup_key(e) == dedup_key(&s)) {
+            // 同一设备的另一条服务记录：若新条目是经典 _adb._tcp 而旧的不是，换成经典的。
             if s.service_type == "_adb._tcp" && existing.service_type != "_adb._tcp" {
                 *existing = s;
             }
@@ -120,17 +163,17 @@ mod tests {
     }
 
     #[test]
-    fn connectable_dedups_by_host_prefers_classic() {
+    fn connectable_merges_same_device_records_prefers_classic() {
         let svcs = parse_mdns_services(SAMPLE);
         let conn = connectable(svcs);
-        // 配对服务被排除；同 IP 的两条服务记录合并 → 两台设备（192.168.1.51、192.168.1.26）。
+        // 配对服务被排除；同一设备(同序列号同 IP)的两条服务记录合并 → 两台设备（.51、.26）。
         assert_eq!(conn.len(), 2);
         let first = conn.iter().find(|s| s.host == "192.168.1.51").unwrap();
-        assert_eq!(first.service_type, "_adb._tcp"); // 同 IP 多记录优先经典
+        assert_eq!(first.service_type, "_adb._tcp"); // 同设备多记录优先经典
         assert_eq!(first.port, 5555);
     }
 
-    /// 重复/非唯一序列号（Pico 常见）但 IP 不同的两台设备：按 IP 去重应**都保留**，不被误并。
+    /// 重复/非唯一序列号（Pico 常见）但 IP 不同的两台设备：复合键去重应**都保留**，不被误并（修最初的 Pico 被吞）。
     #[test]
     fn connectable_keeps_distinct_hosts_with_duplicate_serial() {
         let dup = "List of discovered mdns services\n\
@@ -140,6 +183,17 @@ mod tests {
         assert_eq!(conn.len(), 2, "序列号相同但 IP 不同的两台 Pico 都应出现在扫描结果里");
         assert!(conn.iter().any(|s| s.host == "192.168.1.10"));
         assert!(conn.iter().any(|s| s.host == "192.168.1.11"));
+    }
+
+    /// 回归守护：同 IP、序列号不同的两条记录（极端/未解析占位地址下）复合键去重应**都保留**——
+    /// 防止退回到纯 IP 去重那种「原本能扫的都没了」。
+    #[test]
+    fn connectable_keeps_same_host_with_distinct_serials() {
+        let same_host = "List of discovered mdns services\n\
+            adb-AAAA\t_adb._tcp\t0.0.0.0:5555\n\
+            adb-BBBB\t_adb._tcp\t0.0.0.0:5555\n";
+        let conn = connectable(parse_mdns_services(same_host));
+        assert_eq!(conn.len(), 2, "同 IP 但序列号不同的两条记录不应被误并");
     }
 
     #[test]

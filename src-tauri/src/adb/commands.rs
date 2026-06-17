@@ -71,7 +71,8 @@ pub async fn pair_wifi(app: AppHandle, target: String, pairing_code: String) -> 
 pub async fn discover_mdns_devices(app: AppHandle) -> Value {
     match binary::resolve_adb_path(&app) {
         None => adb_not_found(),
-        Some(adb) => match super::mdns::discover(&adb).await {
+        // 多拍扫描(3 拍 × 间隔 800ms)合并：覆盖 mDNS 周期广播/冷缓存导致的单次快照漏扫。
+        Some(adb) => match super::mdns::discover_merged(&adb, 3, 800).await {
             Ok(svcs) => json!({ "success": true, "data": super::mdns::connectable(svcs) }),
             Err(e) => e.to_result(),
         },

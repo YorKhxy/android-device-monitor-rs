@@ -1142,10 +1142,12 @@ function SimpleApp() {
 
   // \u53d1\u73b0\u5217\u8868\u6392\u9664\u5df2\u8fde\u63a5\u8bbe\u5907\uff08\u6309\u5e8f\u5217\u53f7 / ip:\u7aef\u53e3\u5339\u914d\uff09\u2014\u2014\u8fde\u4e0a\u540e\u81ea\u52a8\u4ece\u5217\u8868\u6d88\u5931\u3002
   // \u53ea\u7559\u771f\u5b9e SN \u4ee5 PA \u5f00\u5934\u7684\u8bbe\u5907\uff08Pico\uff09\uff0c\u8fc7\u6ee4\u6389\u624b\u673a\u7b49\u5176\u5b83\u5c40\u57df\u7f51\u8bbe\u5907\u3002
-  const mdnsConnectedKeys = new Set<string>(devices.flatMap((d) => [d.serialNo, d.id].filter(Boolean) as string[]));
+  // 已连接判断按 **IP** 比，不按序列号：Pico 常有重复序列号，按序列号会让「同序列号、未连接」的另一台
+  // 被已连接的那台误隐藏（→ 手动能连、就是扫不出来）。WiFi 设备 id 为 ip:端口取 IP；USB 序列号无冒号取整段，
+  // 不会误撞 IP。按 IP 比也免去端口差异（mDNS 经典 5555 vs 无线调试随机端口）的干扰。
+  const connectedIps = new Set<string>(devices.map((d) => (d.id || '').split(':')[0]).filter(Boolean));
   const visibleMdns = mdnsDevices.filter((m) =>
-    !(m.serial && mdnsConnectedKeys.has(m.serial)) &&
-    !mdnsConnectedKeys.has(m.target) &&
+    !connectedIps.has(m.host) &&
     resolveMdnsSn(m).toUpperCase().startsWith('PA')
   );
 
