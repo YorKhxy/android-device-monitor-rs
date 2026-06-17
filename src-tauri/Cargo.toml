@@ -1,6 +1,6 @@
 [package]
 name = "android-device-monitor"
-version = "0.1.30"
+version = "0.1.31"
 description = "安卓设备监控 - 设备监控工具（Tauri + Rust 重构版）"
 authors = ["Hxy"]
 edition = "2021"
