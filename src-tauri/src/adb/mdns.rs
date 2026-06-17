@@ -78,14 +78,16 @@ pub async fn discover(adb: &Path) -> Result<Vec<MdnsService>, AdbError> {
     Ok(parse_mdns_services(&out.stdout))
 }
 
-/// 可连接的设备（非配对服务），按序列号去重——同一设备可能同时广播 _adb._tcp 与 _adb-tls-connect._tcp，
-/// 只留一条（优先 _adb._tcp 的经典 5555，其次任意）。
+/// 可连接的设备（非配对服务），**按主机 IP 去重**——同一台物理设备 = 局域网里一个 IP，它同时广播的
+/// _adb._tcp 与 _adb-tls-connect._tcp 共享同一 IP 会被正确合并（优先 _adb._tcp 的经典 5555，连接最稳）。
+///
+/// 为何不按序列号去重：Pico 等设备常有**重复/非唯一序列号**（同批刷机），按序列号去重会把序列号相同、
+/// IP 不同的两台真实设备误并成一台 → 表现为「同型号同设置、手动 IP 能连、就是扫不出来」。按 IP 去重免疫此坑。
 pub fn connectable(services: Vec<MdnsService>) -> Vec<MdnsService> {
     let mut out: Vec<MdnsService> = Vec::new();
     for s in services.into_iter().filter(|s| !s.pairing) {
-        let key = s.serial.clone().unwrap_or_else(|| s.host.clone());
-        if let Some(existing) = out.iter_mut().find(|e| e.serial.clone().unwrap_or_else(|| e.host.clone()) == key) {
-            // 已有同设备：若新条目是经典 _adb._tcp 而旧的不是，换成经典的（连接最稳）。
+        if let Some(existing) = out.iter_mut().find(|e| e.host == s.host) {
+            // 已有同 IP（同一设备的另一条服务记录）：若新条目是经典 _adb._tcp 而旧的不是，换成经典的。
             if s.service_type == "_adb._tcp" && existing.service_type != "_adb._tcp" {
                 *existing = s;
             }
@@ -118,14 +120,26 @@ mod tests {
     }
 
     #[test]
-    fn connectable_dedups_by_serial_prefers_classic() {
+    fn connectable_dedups_by_host_prefers_classic() {
         let svcs = parse_mdns_services(SAMPLE);
         let conn = connectable(svcs);
-        // 配对服务被排除；同序列号去重 → 两台设备。
+        // 配对服务被排除；同 IP 的两条服务记录合并 → 两台设备（192.168.1.51、192.168.1.26）。
         assert_eq!(conn.len(), 2);
-        let first = conn.iter().find(|s| s.serial.as_deref() == Some("PA9410MGK3220149G")).unwrap();
-        assert_eq!(first.service_type, "_adb._tcp"); // 优先经典
+        let first = conn.iter().find(|s| s.host == "192.168.1.51").unwrap();
+        assert_eq!(first.service_type, "_adb._tcp"); // 同 IP 多记录优先经典
         assert_eq!(first.port, 5555);
+    }
+
+    /// 重复/非唯一序列号（Pico 常见）但 IP 不同的两台设备：按 IP 去重应**都保留**，不被误并。
+    #[test]
+    fn connectable_keeps_distinct_hosts_with_duplicate_serial() {
+        let dup = "List of discovered mdns services\n\
+            adb-SAMESERIAL\t_adb._tcp\t192.168.1.10:5555\n\
+            adb-SAMESERIAL\t_adb._tcp\t192.168.1.11:5555\n";
+        let conn = connectable(parse_mdns_services(dup));
+        assert_eq!(conn.len(), 2, "序列号相同但 IP 不同的两台 Pico 都应出现在扫描结果里");
+        assert!(conn.iter().any(|s| s.host == "192.168.1.10"));
+        assert!(conn.iter().any(|s| s.host == "192.168.1.11"));
     }
 
     #[test]
