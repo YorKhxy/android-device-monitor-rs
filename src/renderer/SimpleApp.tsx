@@ -1145,7 +1145,11 @@ function SimpleApp() {
   // 已连接判断按 **IP** 比，不按序列号：Pico 常有重复序列号，按序列号会让「同序列号、未连接」的另一台
   // 被已连接的那台误隐藏（→ 手动能连、就是扫不出来）。WiFi 设备 id 为 ip:端口取 IP；USB 序列号无冒号取整段，
   // 不会误撞 IP。按 IP 比也免去端口差异（mDNS 经典 5555 vs 无线调试随机端口）的干扰。
-  const connectedIps = new Set<string>(devices.map((d) => (d.id || '').split(':')[0]).filter(Boolean));
+  // **只算真正在连(status==='connected')的设备**：devices 含断开后留作历史的 offline 条目，若把它们也算进
+  // 「已连接」，断开过一次的设备其 IP 会一直留在集合里 → 再扫永远被挡（连一次、断开、再扫就没了）。
+  const connectedIps = new Set<string>(
+    devices.filter((d) => d.status === 'connected').map((d) => (d.id || '').split(':')[0]).filter(Boolean)
+  );
   const visibleMdns = mdnsDevices.filter((m) =>
     !connectedIps.has(m.host) &&
     resolveMdnsSn(m).toUpperCase().startsWith('PA')
