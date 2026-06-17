@@ -31,9 +31,9 @@ const FLUSH_MS: u64 = 120; // 定时 flush 间隔（不足一批也按节奏推�
 // Studio 的近实时；前端洪流防假死由前端自己的渲染节流(无过滤 300ms)兜底，后端推得更勤只降延迟不增重渲染率。
 const QUEUE_CAP: usize = 1000; // 缓冲安全上限（即时 200 flush 下天然不会触达，超出丢最旧兜底）。
 const PID_REFRESH_MS: u128 = 2000; // PID→包名缓存刷新间隔（与老工具 logcatPidPackageRefreshIntervalMs 一致）。
-// 「包含历史」开抓时只回灌最近这么多行(有界)：够带上刚刚的爆发日志，又不会让高频设备的海量历史冲爆 UI。
-// 想要更久远的历史用「导出设备缓冲」(走文件，不经 UI)。
-const HISTORY_TAIL_LINES: u32 = 2000;
+// 抓取的缓冲区（对齐 Android Studio 默认覆盖：主/系统/崩溃三缓冲）。不指定时只读默认主缓冲，会漏 crash
+// 缓冲里的崩溃、system 缓冲里的系统服务日志。best-effort：设备不支持某缓冲时整体退回默认（见 start 容错）。
+pub(crate) const LOGCAT_BUFFERS: &str = "main,system,crash";
 
 // 注：不再做后端「每秒最多 N 条」的丢行限流。老工具 maxLogCallbacksPerSecond 限的是「回调次数」
 // （一次回调带一批行），本实现已用 BATCH_MAX/FLUSH_MS 批量 emit + 前端批处理双重节流等效达成。
@@ -143,8 +143,10 @@ fn push_entry(
 
 /// 启动某设备的 logcat 流。已在跑则先停旧（参数可能变），再起新。
 /// `pid`：前端显式填的数字 PID → adb `--pid=`（采集端限制，与老工具 sourcePid 同）；不填则全量抓。
-/// `include_history`：true=开抓即带设备当前缓冲里的历史（捞得到「连接瞬间」等爆发日志，如 MVXRSDK，
-/// 与 Android Studio 行为一致）；false=加 `-T <开抓时刻>` 只收新日志、不回灌历史。
+/// `include_history`：true=连上回放设备 ring buffer 历史（对齐 Android Studio：不带 `-T`，logcat 先吐当前缓冲
+/// 全部、再续接实时）；false=加 `-T <开抓时刻>` 只收新日志、不回灌历史。
+/// `history_tail`：仅 include_history=true 生效。None=全量回放（默认，对齐 AS）；Some(n)=`-T n` 只回最近 n 行——
+/// 「可配上限」兜底，高频洪流设备(Pico)可调小，避免一次性回放几十万行的首屏灌入过猛。
 /// `is_restart`：断流自动重连续抓时为 true → 完整日志追加不清空（保留断流前内容）；用户开抓为 false → truncate。
 ///
 /// 注：返回**显式装箱的 Future** 而非 `async fn`——reader_loop 在异常 EOF 时会回调本函数自动重连，
@@ -157,31 +159,42 @@ pub fn start<'a>(
     pid: Option<i64>,
     include_history: bool,
     is_restart: bool,
+    history_tail: Option<u32>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
     stop(device_id).await; // 幂等：换参重启。
 
     // 调大设备 logcat 环形缓冲（默认仅 256KiB，高频设备几分钟就把爆发日志挤没——典型：连接瞬间的
-    // MVXRSDK 一会儿就被冲掉、事后捞不到）。16M 让历史留存久得多。best-effort：失败/不支持不阻断抓取。
-    let _ = exec_adb_capture(adb, &["-s", device_id, "logcat", "-G", "16M"], 5_000).await;
+    // MVXRSDK 一会儿就被冲掉、事后捞不到）。16M 让历史留存久得多，按所抓缓冲一并调大。
+    // best-effort：失败/不支持不阻断抓取。
+    let _ = exec_adb_capture(adb, &["-s", device_id, "logcat", "-b", LOGCAT_BUFFERS, "-G", "16M"], 5_000).await;
 
     let mut args: Vec<String> = vec![
         "-s".into(),
         device_id.into(),
         "logcat".into(),
+        "-b".into(),
+        LOGCAT_BUFFERS.into(),
         "-v".into(),
         "long".into(),
     ];
     if let Some(p) = pid {
         args.push(format!("--pid={p}"));
     }
-    // 两种模式都用 -T 限定起点，且**绝不把整个设备缓冲灌进实时面板**——高频设备(如 Pico，~500 行/秒)
-    // 缓冲调大后可达十几万行，一次性涌入会冲爆前端(自动滚动反复强制布局 → 卡死、实时也进不来)。
-    // 想查"很久以前"的日志(如几分钟前的连接 MVXRSDK)用「导出设备缓冲」——那条走文件、不经 UI、不会卡。
+    // 历史回放策略（对齐 Android Studio）：前端「包含历史」开 → 回放设备 ring buffer 再续接实时。
+    // 前端环形缓冲(ChunkedLogStore)+ 变高虚拟滚动 + 批量节流已能吸收洪流(渲染成本 O(视口) 非 O(总量))，
+    // 故不再像旧版那样硬砍 2000 行。高频设备(Pico)若首屏回放过猛，由 history_tail「可配上限」兜底。
     if include_history {
-        // 带历史：只取最近 HISTORY_TAIL 行(有界，含刚刚的爆发日志)再续接实时；不取整缓冲。
-        args.push("-T".into());
-        args.push(HISTORY_TAIL_LINES.to_string());
+        match history_tail {
+            // 全量回放(默认，对齐 AS)：不加 -T，logcat 先吐当前缓冲全部、再 follow 实时。
+            None => {}
+            // 可配上限兜底：-T n 只回最近 n 行再续接实时（n=0 退化为全量，避免无效参数）。
+            Some(n) if n > 0 => {
+                args.push("-T".into());
+                args.push(n.to_string());
+            }
+            Some(_) => {}
+        }
     } else {
         // 只收新日志：-T <设备当前时刻>（设备自身时钟，与 logcat 时间戳同源同时区，避免 PC 时钟偏差）；
         // 取时间失败兜底 `-T 1`（只回最近 1 行）。
@@ -311,7 +324,8 @@ async fn reader_loop(
                 .map(|m| m.get(&dev2).map(|e| e.id) != Some(stale_id))
                 .unwrap_or(true);
             if !user_stopped {
-                let _ = start(&app2, &adb2, &dev2, pid, false, true).await;
+                // 重连只收新日志(include_history=false)，history_tail 无意义传 None。
+                let _ = start(&app2, &adb2, &dev2, pid, false, true, None).await;
             }
         });
     } else if let Ok(mut map) = streams().lock() {

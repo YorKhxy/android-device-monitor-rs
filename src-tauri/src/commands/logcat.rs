@@ -66,6 +66,9 @@ pub async fn start_logcat(
     // 是否带设备当前缓冲里的历史（默认 true，捞得到连接瞬间已打的 MVXRSDK 等爆发日志）；
     // 前端「包含历史」开关关掉时传 false → 只收开抓后的新日志。
     include_history: Option<bool>,
+    // 历史回放上限（仅 include_history=true 生效）。不传/None=全量回放（对齐 AS）；
+    // Some(n)=只回最近 n 行——高频洪流设备(Pico)可调小，避免首屏一次性灌入过猛。
+    history_tail_lines: Option<u32>,
 ) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
         None => return adb_not_found(),
@@ -73,7 +76,7 @@ pub async fn start_logcat(
     };
     let pid_num = pid.and_then(|s| s.trim().parse::<i64>().ok());
 
-    match logcat_stream::start(&app, &adb, &device_id, pid_num, include_history.unwrap_or(true), false).await {
+    match logcat_stream::start(&app, &adb, &device_id, pid_num, include_history.unwrap_or(true), false, history_tail_lines).await {
         Ok(()) => json!({ "success": true }),
         Err(e) => json!({ "success": false, "error": e }),
     }
@@ -220,7 +223,12 @@ pub async fn export_device_log_buffer(app: AppHandle, device_id: String) -> Valu
         Some(p) => p,
     };
     // 先 dump（捕获「点击那一刻」的缓冲，不受后续保存对话框耗时影响）。-d 立即返回，给足超时即可。
-    let captured = exec_adb_capture(&adb, &["-s", &device_id, "logcat", "-d", "-v", "long", "*:V"], 30_000).await;
+    let captured = exec_adb_capture(
+        &adb,
+        &["-s", &device_id, "logcat", "-d", "-b", logcat_stream::LOGCAT_BUFFERS, "-v", "long", "*:V"],
+        30_000,
+    )
+    .await;
     let raw = match captured {
         Ok(c) if c.success => c.stdout,
         Ok(c) => {

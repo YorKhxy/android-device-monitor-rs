@@ -1,6 +1,8 @@
 import type { LogEntry } from '../../shared/types';
 
-export const MAX_LOG_ENTRIES = 20000;
+// 内存环形缓冲上限。对齐 Android Studio「连上回放整缓冲」后历史量更大，且变高虚拟滚动渲染成本 O(视口)
+// 非 O(总量)，5 万行无渲染压力。完整日志另有落盘(device-logs/)，UI 超限丢最旧不丢盘。
+export const MAX_LOG_ENTRIES = 50000;
 export const BATCH_UPDATE_SIZE = 50;
 export const BATCH_UPDATE_DELAY = 100;
 export const MAX_PENDING_LOG_BUFFER = 2000;
