@@ -682,6 +682,10 @@ function SimpleApp() {
               manualCheckRef.current = false;
               setCheckResult('检查失败，请确认更新服务器');
               window.setTimeout(() => setCheckResult(''), 5000);
+            } else if (status.state === 'disabled') {
+              manualCheckRef.current = false;
+              setCheckResult('开发(dev)模式下热更已禁用');
+              window.setTimeout(() => setCheckResult(''), 5000);
             } else {
               manualCheckRef.current = false;
               setCheckResult(''); // available/downloading/downloaded → 交给提示框展示

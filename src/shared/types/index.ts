@@ -410,7 +410,7 @@ export interface MirrorStartOptions {
 
 /** 自动更新状态机。checking=检查中，available=发现新版本，not-available=已最新，
  *  downloading=下载中（带 percent），downloaded=下好待重启安装，error=出错。 */
-export type UpdateState = 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
+export type UpdateState = 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error' | 'disabled';
 
 export interface UpdateStatus {
   state: UpdateState;

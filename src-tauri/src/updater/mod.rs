@@ -122,6 +122,8 @@ fn pin_install_dir_to_registry() {
 fn pin_install_dir_to_registry() {}
 
 /// 启动时调用:把安装位置钉回当前 exe 目录(详见 [`pin_install_dir_to_registry`])。
+/// 仅 release 启动时被调(lib.rs 里 `#[cfg(not(debug_assertions))]`)，debug 构建无调用方 → 允许 dead_code。
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn ensure_install_dir_pinned() {
     pin_install_dir_to_registry();
 }
@@ -134,9 +136,23 @@ fn emit_status(app: &AppHandle, status: Value) {
     let _ = app.emit("update_status", status);
 }
 
+/// dev(debug)构建禁用热更:dev 跑的是 target/debug 产物，既没更新端点、也不该把开发产物当可热更的安装。
+/// 命中则推 `disabled` 状态给前端提示并返回 true 让调用方早退;release 构建恒为 false，零开销。
+fn updates_disabled_in_dev(app: &AppHandle) -> bool {
+    if cfg!(debug_assertions) {
+        emit_status(app, json!({ "state": "disabled" }));
+        true
+    } else {
+        false
+    }
+}
+
 /// 检查更新（手动触发）。有更新缓存 Update 并推 available + 更新日志；无更新推 not-available。
 #[tauri::command]
 pub async fn check_for_update(app: AppHandle) -> Value {
+    if updates_disabled_in_dev(&app) {
+        return json!({ "success": false, "error": "开发(dev)模式下热更已禁用" });
+    }
     emit_status(&app, json!({ "state": "checking" }));
 
     let updater = match build_updater(&app) {
@@ -182,6 +198,9 @@ pub fn get_update_status() -> Value {
 /// 下载更新包（静默，进度经 update_status percent 推送）。下好缓存字节、推 downloaded 待重启安装。
 #[tauri::command]
 pub async fn download_update(app: AppHandle) -> Value {
+    if updates_disabled_in_dev(&app) {
+        return json!({ "success": false, "error": "开发(dev)模式下热更已禁用" });
+    }
     // 取出待处理 Update（不跨 await 持锁）。
     let update = match pending_update().lock().ok().and_then(|mut p| p.take()) {
         Some(u) => u,
@@ -238,6 +257,9 @@ pub async fn download_update(app: AppHandle) -> Value {
 /// 安装已下载的更新并重启（静默装）。
 #[tauri::command]
 pub fn quit_and_install_update(app: AppHandle) -> Value {
+    if updates_disabled_in_dev(&app) {
+        return json!({ "success": false, "error": "开发(dev)模式下热更已禁用" });
+    }
     let update = pending_update().lock().ok().and_then(|mut p| p.take());
     let bytes = downloaded_bytes().lock().ok().and_then(|mut b| b.take());
     // 安装前停掉本地 adb server：app 此刻仍在运行，bundled adb.exe 还锁着安装目录里的 AdbWinApi.dll，
