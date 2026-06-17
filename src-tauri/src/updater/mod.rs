@@ -201,6 +201,11 @@ pub async fn download_update(app: AppHandle) -> Value {
 pub fn quit_and_install_update(app: AppHandle) -> Value {
     let update = pending_update().lock().ok().and_then(|mut p| p.take());
     let bytes = downloaded_bytes().lock().ok().and_then(|mut b| b.take());
+    // 安装前停掉本地 adb server：app 此刻仍在运行，bundled adb.exe 还锁着安装目录里的 AdbWinApi.dll，
+    // NSIS 覆盖该 DLL 会撞 os error 32（覆盖失败 / 留旧文件）。先 kill-server 释放占用再装。
+    if let Some(adb) = crate::adb::binary::resolve_adb_path(&app) {
+        tauri::async_runtime::block_on(crate::adb::manager::kill_server(&adb));
+    }
     match (update, bytes) {
         (Some(update), Some(bytes)) => match update.install(bytes) {
             Ok(()) => {

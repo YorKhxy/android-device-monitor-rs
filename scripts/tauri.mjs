@@ -6,11 +6,30 @@
 //   - 否则默认 ~/.cargo/bin（rustup 默认）
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// 防呆：构建/dev 前杀掉本仓库目录下残留的 adb.exe。
+// 退出 app 后 adb server 常赖着不走，把 AdbWinApi.dll 加载在内存里；下次构建脚本拷贝该 DLL
+// 进资源包时就撞 “os error 32 文件被占用”。只杀路径在 repoRoot 下的 adb（target/platform-tools），
+// 不碰系统或 Android Studio 的 adb，避免撞掉别处的 adb server（不同版本会互相踢断）。
+function killRepoAdb() {
+  if (process.platform !== 'win32') return;
+  const sub = process.argv[2];
+  if (sub !== 'build' && sub !== 'dev') return;
+  // 用 repoRoot 前缀过滤：仅终止从本仓库启动的 adb.exe
+  const ps = `Get-CimInstance Win32_Process -Filter "Name='adb.exe'" | `
+    + `Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith(${JSON.stringify(repoRoot)}) } | `
+    + `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+    stdio: 'ignore',
+  });
+  if (r.status === 0) console.log('[tauri wrapper] 已清理本仓库残留 adb 进程，释放 AdbWinApi.dll 占用');
+}
+killRepoAdb();
 
 // release-notes.md 是 tauri.conf 的必需 resource（缺则构建直接失败）。打热更包(build-update)会先跑
 // gen-release-notes 写真实内容；而 dev / 绿色包 / 裸 build 不生成它，故此处兜底确保文件存在：

@@ -113,6 +113,13 @@ pub async fn exec_adb(adb: &Path, args: &[&str], timeout_ms: u64) -> Result<AdbO
     Ok(AdbOutput { stdout, stderr })
 }
 
+/// 关闭本地 adb server（释放 adb.exe 对 AdbWinApi.dll 的占用）。
+/// best-effort：失败/超时静默吞掉，不阻塞调用方。退出清理与热更安装前调用——bundled adb.exe
+/// 把同目录的 AdbWinApi.dll 加载进内存锁住，残留进程会让构建/热更覆盖该 DLL 时撞 os error 32。
+pub async fn kill_server(adb: &Path) {
+    let _ = exec_adb(adb, &["kill-server"], 5000).await;
+}
+
 /// 解析 `adb devices -l` 输出为设备摘要（对齐原 parseDeviceSummaries：跳过表头/特殊条目/mDNS）。
 fn parse_device_summaries(stdout: &str) -> Vec<DeviceSummary> {
     let mut summaries = Vec::new();

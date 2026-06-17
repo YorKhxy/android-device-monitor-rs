@@ -142,6 +142,9 @@ pub fn run() {
                     // 关掉对照探针在设备上启用的 SurfaceFlinger timestats。
                     if let Some(adb) = adb::binary::resolve_adb_path(&app) {
                         adb::surface_fps::disable_all(&adb).await;
+                        // 最后停掉本地 adb server：否则 adb.exe 残留会锁住安装目录里的 AdbWinApi.dll，
+                        // 热更覆盖 / 重装时撞 os error 32。须在 disable_all 之后（那步还要用 server 通设备）。
+                        adb::manager::kill_server(&adb).await;
                     }
                 });
             }
