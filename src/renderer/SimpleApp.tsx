@@ -543,15 +543,19 @@ function SimpleApp() {
     batchUpdateSizeRef.current = batchUpdateSize;
   }, [batchUpdateSize]);
 
-  // 渲染触发限频：入库(store.append)每批都做(便宜)，但 logVersion 的 bump——它会触发对最多 2 万条整体
-  // 重跑 filteredLogs/重算行高/重渲染，很重——节流到 ~3 次/秒。否则高频设备(启动应用瞬间数万行/秒)下
-  // 每批都重渲染会占满主线程，事件处理饿死 → UI「不增长」假死。尾随定时器保证洪流停后最终态也能刷出。
+  // 渲染触发限频：入库(store.append)每批都做(便宜)，但 logVersion 的 bump——无过滤时它要对最多 2 万条整体
+  // 物化/重算行高/重渲染，很重——节流到 ~3 次/秒。否则高频设备(启动应用瞬间数万行/秒)下每批都重渲染会占满
+  // 主线程，事件处理饿死 → UI「不增长」假死。尾随定时器保证洪流停后最终态也能刷出。
+  // 但开着过滤时，匹配结果通常很少、filteredLogs 又是增量的，重渲染极便宜——再按洪流的 300ms 拖着，
+  // 就成了「筛某行要等半秒才冒出来」(对齐 Android Studio：过滤视图的刷新不应被日志总量牵制)。
+  // 故过滤态用 ~60ms 快节流，匹配行近实时出现；无过滤态仍 300ms 防假死。
+  const hasActiveLogFilterRef = useRef(false);
   const logRenderThrottleRef = useRef<{ last: number; timer: number | null }>({ last: 0, timer: null });
   const bumpLogVersionThrottled = useCallback(() => {
     const t = logRenderThrottleRef.current;
     const now = Date.now();
     const since = now - t.last;
-    const MIN_INTERVAL = 300;
+    const MIN_INTERVAL = hasActiveLogFilterRef.current ? 60 : 300;
     if (since >= MIN_INTERVAL) {
       t.last = now;
       setLogVersion(version => version + 1);
@@ -2557,6 +2561,8 @@ function SimpleApp() {
     logPackageFilter.trim() ||
     logPidFilter.trim()
   );
+  // 供 bumpLogVersionThrottled 在渲染外读取：过滤态走快节流（见其定义处注释）。
+  hasActiveLogFilterRef.current = hasActiveLogFilter;
   const allLogCount = currentLogState?.store.count || 0;
 
   const logLevelCounts = useMemo(() => {
@@ -2564,10 +2570,24 @@ function SimpleApp() {
     return currentLogState?.store.getCounts() || createLogCounts();
   }, [logVersion, currentLogState, selectedDeviceId]);
 
-  const filteredLogs = useMemo(() => {
-    if (!hasActiveLogFilter || !currentLogState || currentLogState.store.count === 0) return [];
+  // 增量过滤缓存：避免每个渲染 tick 都对整库（最多 2 万条）重跑字符串匹配——洪流下那会占满主线程，
+  // 让筛选结果迟迟刷不出（开着过滤、应用触发日志后要等数秒才显示，根因即此）。改为：过滤条件/设备变化时
+  // 全量重建一次，其后每 tick 仅测「新增条目」并剔除滚出环形缓冲的旧匹配，单 tick 代价由 O(全库) 降到 O(新增)。
+  // items 按全局序号 gi 升序保存，gi = 该条在 store.appendedTotal 维度上的位置，用于判定是否已被淘汰。
+  const filteredCacheRef = useRef<{
+    deviceId: string;
+    key: string;
+    lastAppended: number;
+    items: { gi: number; log: LogEntry }[];
+  } | null>(null);
 
-    const logs = currentLogState.store.toArray();
+  const filteredLogs = useMemo(() => {
+    if (!hasActiveLogFilter || !currentLogState || currentLogState.store.count === 0) {
+      filteredCacheRef.current = null;
+      return [];
+    }
+
+    const store = currentLogState.store;
     const searchTokens = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
     const hasSearch = searchTokens.length > 0;
     const hasLevelFilter = filterLevel !== 'all';
@@ -2583,8 +2603,9 @@ function SimpleApp() {
         searchRegex = null;
       }
     }
-    
-    return logs.filter(log => {
+
+    // 单条匹配判定（逻辑与原全量版逐字一致，只是抽成函数供全量/增量两条路径共用）。
+    const test = (log: LogEntry): boolean => {
       if (hasLevelFilter) {
         const filterPriority = levelPriority[filterLevel as LogEntry['level']];
         const entryPriority = levelPriority[log.level];
@@ -2613,11 +2634,58 @@ function SimpleApp() {
       if (!hasSearch && !searchRegex) {
         return true;
       }
-      
+
       const haystack = `${log.message} ${log.tag} ${log.packageName || ''} ${log.processId}`.toLowerCase();
       return searchRegex ? searchRegex.test(haystack) : searchTokens.some(token => haystack.includes(token));
-    });
-  }, [logVersion, currentLogState, hasActiveLogFilter, searchTerm, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch]);
+    };
+
+    // 缓存有效性键：任一过滤条件/正则开关变了即失效 → 全量重建。
+    const key = JSON.stringify([searchTerm, useRegexSearch, filterLevel, tagFilter, packageFilter, pidFilter]);
+    const appendedTotal = store.appendedTotal;
+    const droppedTotal = appendedTotal - store.count; // 当前最旧条目的全局序号（< 它的都已淘汰）。
+    let cache = filteredCacheRef.current;
+
+    const rebuild = () => {
+      const arr = store.toArray();
+      const items: { gi: number; log: LogEntry }[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        if (test(arr[i])) items.push({ gi: droppedTotal + i, log: arr[i] });
+      }
+      return items;
+    };
+
+    // 全量重建：首次 / 过滤条件变 / 切设备 / store 被清空(appendedTotal 回退)。
+    if (!cache || cache.key !== key || cache.deviceId !== selectedDeviceId || appendedTotal < cache.lastAppended) {
+      cache = { deviceId: selectedDeviceId, key, lastAppended: appendedTotal, items: rebuild() };
+      filteredCacheRef.current = cache;
+      return cache.items.map(x => x.log);
+    }
+
+    // 增量：只测自上次以来新增的条目。
+    const newCount = appendedTotal - cache.lastAppended;
+    if (newCount > 0) {
+      if (newCount >= store.count) {
+        // 两次 tick 间整库被换过一轮（新增量 ≥ 当前库容）→ 退化为全量重扫当前库。
+        cache.items = rebuild();
+      } else {
+        const tail = store.tail(newCount);
+        const base = appendedTotal - tail.length;
+        for (let i = 0; i < tail.length; i++) {
+          if (test(tail[i])) cache.items.push({ gi: base + i, log: tail[i] });
+        }
+      }
+      cache.lastAppended = appendedTotal;
+    }
+
+    // 剔除已滚出环形缓冲的旧匹配（gi 升序，从头丢到首个仍在库内的）。
+    if (cache.items.length && cache.items[0].gi < droppedTotal) {
+      let drop = 0;
+      while (drop < cache.items.length && cache.items[drop].gi < droppedTotal) drop++;
+      cache.items.splice(0, drop);
+    }
+
+    return cache.items.map(x => x.log);
+  }, [logVersion, currentLogState, hasActiveLogFilter, searchTerm, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch, selectedDeviceId]);
 
   // 变高虚拟滚动：每条日志高度按行数变化，需先把当前可见列表物化成数组以便算累计偏移。
   const activeLogList = useMemo<LogEntry[]>(

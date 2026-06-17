@@ -18,12 +18,20 @@ export const createLogCounts = (): LogCounts => ({ V: 0, D: 0, I: 0, W: 0, E: 0,
 export class ChunkedLogStore {
   private chunks: LogEntry[][] = [];
   private totalCount = 0;
+  // 单调累计 append 数：永不随淘汰减少（淘汰只动 totalCount）。增量过滤据此定位「自上次以来的新增条目」
+  // 并算出当前最旧条目的全局序号（appendedTotal - count），用于把已滚出环形缓冲的匹配项从筛选结果里剔除。
+  private appended = 0;
   private counts = createLogCounts();
 
   constructor(private limit: number) {}
 
   get count(): number {
     return this.totalCount;
+  }
+
+  // 累计 append 过的条目总数（含已淘汰），单调递增；clear 归零。
+  get appendedTotal(): number {
+    return this.appended;
   }
 
   setLimit(limit: number): void {
@@ -40,6 +48,7 @@ export class ChunkedLogStore {
       }
       chunk.push(entry);
       this.totalCount++;
+      this.appended++;
       this.counts[entry.level]++;
     }
     this.trimToLimit();
@@ -48,7 +57,27 @@ export class ChunkedLogStore {
   clear(): void {
     this.chunks = [];
     this.totalCount = 0;
+    this.appended = 0;
     this.counts = createLogCounts();
+  }
+
+  // 取最近 n 条（保持原顺序）。增量过滤用它只扫新增的那一小段，而非每次重扫整个缓冲。
+  tail(n: number): LogEntry[] {
+    const count = Math.min(n, this.totalCount);
+    if (count <= 0) return [];
+    const startGlobal = this.totalCount - count;
+    const out: LogEntry[] = [];
+    let gi = 0;
+    for (const chunk of this.chunks) {
+      if (gi + chunk.length <= startGlobal) {
+        gi += chunk.length;
+        continue;
+      }
+      const from = Math.max(0, startGlobal - gi);
+      for (let i = from; i < chunk.length; i++) out.push(chunk[i]);
+      gi += chunk.length;
+    }
+    return out;
   }
 
   get(index: number): LogEntry | undefined {

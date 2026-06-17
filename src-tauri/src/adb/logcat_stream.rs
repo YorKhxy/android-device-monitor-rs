@@ -1,5 +1,5 @@
 //! 常驻 logcat 流（T4-4，对应原 logcat 抓取逻辑）。每台设备一条 `adb logcat -v long [--pid=N] -T <开抓时刻> *:V`
-//! 长进程，后台逐行解析成 `LogEntry`（多行堆栈合并），按「≤200 条/批、250ms、队列上限 1000」批量经 `log_batch`
+//! 长进程，后台逐行解析成 `LogEntry`（多行堆栈合并），按「≤200 条/批、120ms、队列上限 1000」批量经 `log_batch`
 //! event 推前端——既不漏低级别日志（恒 `*:V`），又不因逐条 emit 卡 UI。
 //! `-T` 取设备当前时刻，使每次开抓只收「从现在起」的新日志，不回灌设备 ring buffer 里的历史。
 //!
@@ -27,7 +27,8 @@ use super::manager::exec_adb_capture;
 use crate::logging::full_log_recorder;
 
 const BATCH_MAX: usize = 200; // 单批上限，达到即 flush。
-const FLUSH_MS: u64 = 250; // 定时 flush 间隔（不足一批也按节奏推，保证实时性）。
+const FLUSH_MS: u64 = 120; // 定时 flush 间隔（不足一批也按节奏推，保证实时性）。120ms 让单行延迟更接近 Android
+// Studio 的近实时；前端洪流防假死由前端自己的渲染节流(无过滤 300ms)兜底，后端推得更勤只降延迟不增重渲染率。
 const QUEUE_CAP: usize = 1000; // 缓冲安全上限（即时 200 flush 下天然不会触达，超出丢最旧兜底）。
 const PID_REFRESH_MS: u128 = 2000; // PID→包名缓存刷新间隔（与老工具 logcatPidPackageRefreshIntervalMs 一致）。
 // 「包含历史」开抓时只回灌最近这么多行(有界)：够带上刚刚的爆发日志，又不会让高频设备的海量历史冲爆 UI。
