@@ -89,6 +89,8 @@ const api: ElectronAPI = {
   // —— 应用安装/管理 ——
   selectApkFiles: () => call('select_apk_files'),
   installApk: (deviceId, apkPath, options, installId) => call('install_apk', { deviceId, apkPath, options, installId }),
+  cancelInstall: (installId) => call('cancel_install', { installId }),
+  checkApksOnDevice: (deviceId, apkPaths) => call('check_apks_on_device', { deviceId, apkPaths }),
   onInstallProgress: (cb) => sub('install_progress', cb),
   uninstallApp: (deviceId, packageName) => call('uninstall_app', { deviceId, packageName }),
   listInstalledPackages: (deviceId) => call('list_installed_packages', { deviceId }),

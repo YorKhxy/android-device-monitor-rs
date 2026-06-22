@@ -223,8 +223,31 @@ pub async fn install_apk(
     match install::install_apk(&app, &adb, &device_id, &apk_path, allow_downgrade, &install_id).await {
         // data 形状对齐前端消费 result.data.output 与原版 ApkInstallResult { apkPath, output }。
         Ok(output) => json!({ "success": true, "data": { "apkPath": apk_path, "output": output } }),
+        // 用户中断：标 cancelled 让前端显示「已中断」而非红色失败。
+        Err(e) if e.code == install::INSTALL_CANCELLED_CODE => {
+            json!({ "success": false, "cancelled": true, "error": e.message })
+        }
         Err(e) => e.to_result(),
     }
+}
+
+/// 中断指定 install_id 的安装（前端「中断」按钮）。id 不存在（已结束）则无操作。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn cancel_install(install_id: String) -> Value {
+    install::cancel_request(&install_id);
+    json!({ "success": true })
+}
+
+/// 判定「设备里是否已装有与这些待装 APK 内容完全一致的应用」。返回命中项 [{ apkPath, package }]。
+/// 用于安装前提示「设备上已存在一模一样的应用」。best-effort：查不动一律返回空，不阻断安装。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn check_apks_on_device(app: AppHandle, device_id: String, apk_paths: Vec<String>) -> Value {
+    let adb = match binary::resolve_adb_path(&app) {
+        None => return adb_not_found(),
+        Some(p) => p,
+    };
+    let matches = install::check_apks_identical(&adb, &device_id, &apk_paths).await;
+    json!({ "success": true, "data": matches })
 }
 
 /// 弹原生多选文件对话框选 APK（.apk 过滤）。取消 → 空数组（对齐原版 canceled）。

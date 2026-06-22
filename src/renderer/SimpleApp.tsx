@@ -66,7 +66,7 @@ const isLikelyPicoDevice = (device: DeviceInfo | null): boolean => {
 
 type TabType = 'devices' | 'logs' | 'performance' | 'mirror' | 'weaknet';
 type LogLevelFilter = LogEntry['level'] | 'all';
-type ApkInstallStatus = 'queued' | 'installing' | 'success' | 'failed';
+type ApkInstallStatus = 'queued' | 'installing' | 'success' | 'failed' | 'cancelled';
 
 type ApkInstallQueueItem = {
   id: string;
@@ -76,6 +76,8 @@ type ApkInstallQueueItem = {
   progress: number;
   output?: string;
   error?: string;
+  /** 本次安装的进度/取消通道 id（status 为 installing 时有值，供「中断」按钮调用 cancelInstall）。 */
+  installId?: string;
 };
 
 type DeviceApkInstallState = {
@@ -84,6 +86,9 @@ type DeviceApkInstallState = {
 };
 
 const DEVICE_NAME_STORAGE_KEY = 'android-device-monitor.custom-device-names';
+const LOG_COL_WIDTHS_KEY = 'android-device-monitor.log-col-widths';
+// 日志表前 5 列（时间/Level/PID/包名/标签）默认像素宽；第 6 列「消息」自适应不入此数组。
+const DEFAULT_LOG_COL_WIDTHS = [96, 64, 70, 130, 140];
 
 const loadStoredDeviceNames = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
@@ -222,6 +227,42 @@ function SimpleApp() {
   const [weakNetNeedsAuth, setWeakNetNeedsAuth] = useState(false);
   const [logVersion, setLogVersion] = useState(0);
   const [logViewport, setLogViewport] = useState({ scrollTop: 0, height: 320 });
+  // 日志表列宽（前 5 列，可拖拽表头分隔条调整，持久化到 localStorage）。
+  const [logColWidths, setLogColWidths] = useState<number[]>(() => {
+    try {
+      const raw = localStorage.getItem(LOG_COL_WIDTHS_KEY);
+      if (raw) {
+        const a = JSON.parse(raw);
+        if (Array.isArray(a) && a.length === DEFAULT_LOG_COL_WIDTHS.length && a.every((n) => typeof n === 'number' && n > 0)) return a;
+      }
+    } catch { /* 读不到/坏数据走默认 */ }
+    return [...DEFAULT_LOG_COL_WIDTHS];
+  });
+  // ref 镜像 + 持久化：拖拽时从 ref 取起始宽（避免把 logColWidths 塞进 useCallback 依赖）。
+  const logColWidthsRef = useRef(logColWidths);
+  useEffect(() => {
+    logColWidthsRef.current = logColWidths;
+    try { localStorage.setItem(LOG_COL_WIDTHS_KEY, JSON.stringify(logColWidths)); } catch { /* localStorage 不可用则忽略 */ }
+  }, [logColWidths]);
+  // 拖拽表头分隔条调列宽：mousedown 记起点，mousemove 实时改该列宽（下限 40px），mouseup 收尾。
+  const startLogColResize = useCallback((idx: number, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startW = logColWidthsRef.current[idx];
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.max(40, startW + (ev.clientX - startX));
+      setLogColWidths((prev) => { const a = [...prev]; a[idx] = next; return a; });
+    };
+    const onUp = () => {
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
   const [performanceByDeviceId, setPerformanceByDeviceId] = useState<Record<string, PerformanceMetrics>>({});
   const [performanceSamplesByDeviceId, setPerformanceSamplesByDeviceId] = useState<Record<string, PerformanceSample[]>>({});
   const [performanceSessionStartedAtByDeviceId, setPerformanceSessionStartedAtByDeviceId] = useState<Record<string, Date>>({});
@@ -348,6 +389,8 @@ function SimpleApp() {
   const [installConcurrency, setInstallConcurrency] = useState(4);
   const [installAllowDowngrade, setInstallAllowDowngrade] = useState(false);
   const [isUnifiedInstalling, setIsUnifiedInstalling] = useState(false);
+  // 安装前「比对设备已装应用」阶段：此时安装按钮置灰，并显示可点的「中断」按钮中止比对。
+  const [isPreChecking, setIsPreChecking] = useState(false);
   const [busyDeviceAction, setBusyDeviceAction] = useState<{ id: string; action: 'sleep' | 'wake' | 'unlock' | 'reboot' } | null>(null);
   const [fileBrowserDevice, setFileBrowserDevice] = useState<DeviceInfo | null>(null);
   const [confirmDisconnectId, setConfirmDisconnectId] = useState<string | null>(null);
@@ -365,6 +408,9 @@ function SimpleApp() {
   const batchUpdateSizeRef = useRef(BATCH_UPDATE_SIZE);
   // installId → 该安装对应的 (设备, 队列项)：把后端真实安装进度事件回填到正确的进度条。
   const installProgressTargetsRef = useRef(new Map<string, { deviceId: string; itemId: string }>());
+  // 「比对设备」阶段的中断：标志 + 一个可即时解析的取消信号（与每台设备的查询 Promise.race，点中断立刻生效，不等当前查完）。
+  const precheckCancelledRef = useRef(false);
+  const precheckCancelResolveRef = useRef<(() => void) | null>(null);
 
   const resetDeviceRuntimeState = useCallback(() => {
     setSelectedDevice(null);
@@ -1727,45 +1773,56 @@ function SimpleApp() {
     const baseline = new Set(beforeRes && beforeRes.success && beforeRes.data ? beforeRes.data : []);
     for (const item of items) {
       const startedAt = Date.now();
+      // 唯一 id：既是进度通道（多设备并行各自回填进度条），也是「中断」按钮的取消通道。
+      const installId = `${deviceId}::${item.id}::${startedAt}`;
       appendInstallLog(
         `${deviceLabel} ▶ 开始安装 ${item.fileName}\n    命令: adb install ${installFlags}\n    源文件: ${item.path}`
       );
       updateDeviceApkInstallState(deviceId, (previousState) => ({
         ...previousState,
         queue: previousState.queue.map((q) =>
-          q.id === item.id ? { ...q, status: 'installing', progress: Math.max(q.progress, 8), error: undefined, output: undefined } : q
+          q.id === item.id ? { ...q, status: 'installing', progress: Math.max(q.progress, 8), error: undefined, output: undefined, installId } : q
         ),
       }));
-      // 唯一进度通道 id：同一 APK 装到多台设备并行时各自独立，后端进度事件据此回填到正确的进度条。
-      const installId = `${deviceId}::${item.id}::${startedAt}`;
       installProgressTargetsRef.current.set(installId, { deviceId, itemId: item.id });
       try {
         const result = await window.electronAPI!.installApk(deviceId, item.path, { allowDowngrade: installAllowDowngrade }, installId);
         installProgressTargetsRef.current.delete(installId);
-        const failMsg = result.success ? undefined : formatOperationError(result, '安装失败');
-        // 进度卡只存「一句话原因」（result.error 的标题，不含建议/adb 原文）；完整详情交给下方安装日志，避免两处重复。
-        updateDeviceApkInstallState(deviceId, (previousState) => ({
-          ...previousState,
-          queue: previousState.queue.map((q) =>
-            q.id === item.id
-              ? { ...q, status: result.success ? 'success' : 'failed', progress: 100, output: undefined, error: result.success ? undefined : (result.error || '安装失败') }
-              : q
-          ),
-        }));
         const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
         const indent = (text: string) => text.trim().split(/\r?\n/).filter(Boolean).map((l) => `    ${l}`).join('\n');
-        if (result.success) {
-          const out = (result.data?.output || '').trim();
-          appendInstallLog(
-            `${deviceLabel} ✓ ${item.fileName} 安装成功 · 耗时 ${elapsed}s` + (out ? `\n${indent(out)}` : ''),
-            'success'
-          );
+        if (result.cancelled) {
+          // 用户中断：标「已中断」而非红色失败；不计入成功哈希。
+          updateDeviceApkInstallState(deviceId, (previousState) => ({
+            ...previousState,
+            queue: previousState.queue.map((q) =>
+              q.id === item.id ? { ...q, status: 'cancelled', progress: 100, output: undefined, error: undefined, installId: undefined } : q
+            ),
+          }));
+          appendInstallLog(`${deviceLabel} ⊘ ${item.fileName} 已中断安装 · 耗时 ${elapsed}s`, 'info');
         } else {
-          const details = (result.details || '').trim();
-          appendInstallLog(
-            `${deviceLabel} ✗ ${item.fileName} 安装失败 · 耗时 ${elapsed}s\n    ${failMsg}` + (details ? `\n    ── adb 原始输出 ──\n${indent(details)}` : ''),
-            'error'
-          );
+          const failMsg = result.success ? undefined : formatOperationError(result, '安装失败');
+          // 进度卡只存「一句话原因」（result.error 的标题，不含建议/adb 原文）；完整详情交给下方安装日志，避免两处重复。
+          updateDeviceApkInstallState(deviceId, (previousState) => ({
+            ...previousState,
+            queue: previousState.queue.map((q) =>
+              q.id === item.id
+                ? { ...q, status: result.success ? 'success' : 'failed', progress: 100, output: undefined, error: result.success ? undefined : (result.error || '安装失败'), installId: undefined }
+                : q
+            ),
+          }));
+          if (result.success) {
+            const out = (result.data?.output || '').trim();
+            appendInstallLog(
+              `${deviceLabel} ✓ ${item.fileName} 安装成功 · 耗时 ${elapsed}s` + (out ? `\n${indent(out)}` : ''),
+              'success'
+            );
+          } else {
+            const details = (result.details || '').trim();
+            appendInstallLog(
+              `${deviceLabel} ✗ ${item.fileName} 安装失败 · 耗时 ${elapsed}s\n    ${failMsg}` + (details ? `\n    ── adb 原始输出 ──\n${indent(details)}` : ''),
+              'error'
+            );
+          }
         }
       } catch (err) {
         installProgressTargetsRef.current.delete(installId);
@@ -1773,7 +1830,7 @@ function SimpleApp() {
         const msg = (err as Error).message;
         updateDeviceApkInstallState(deviceId, (previousState) => ({
           ...previousState,
-          queue: previousState.queue.map((q) => (q.id === item.id ? { ...q, status: 'failed', progress: 100, error: msg } : q)),
+          queue: previousState.queue.map((q) => (q.id === item.id ? { ...q, status: 'failed', progress: 100, error: msg, installId: undefined } : q)),
         }));
         appendInstallLog(`${deviceLabel} ✗ ${item.fileName} 安装异常 · 耗时 ${elapsed}s\n    ${msg}`, 'error');
       }
@@ -1796,12 +1853,70 @@ function SimpleApp() {
     }
   };
 
-  // 统一安装：把待装 APK 入队到所选在线设备，按并发上限并行安装。
+  // 统一安装入口：先查每台目标设备「是否已装有与待装 APK 内容完全相同的应用」→ 有则弹确认，确认后才真正安装。
+  // 比对阶段安装按钮置灰、显示「中断」按钮；中断即时生效（Promise.race 取消信号，不等当前设备查完）。
   const startUnifiedInstall = async () => {
-    if (isUnifiedInstalling || !hasElectronAPI()) return;
+    if (isUnifiedInstalling || isPreChecking || !hasElectronAPI()) return;
     const targetIds = Array.from(installTargets).filter((id) => devices.find((d) => d.id === id)?.status === 'connected');
     if (pendingApks.length === 0 || targetIds.length === 0) return;
 
+    // 查设备现状：每台设备问一次后端（大小预过滤 + 设备端 sha256sum），命中=设备上已有内容一模一样的应用。
+    precheckCancelledRef.current = false;
+    const cancelSignal = new Promise<'__cancelled__'>((res) => { precheckCancelResolveRef.current = () => res('__cancelled__'); });
+    setIsPreChecking(true);
+    setIsUnifiedInstalling(true); // 置灰整片安装控件（含安装按钮）
+    appendInstallLog('正在比对设备已装应用（内容是否与待装 APK 完全相同）…');
+    const apkPaths = pendingApks.map((a) => a.path);
+    const dups: string[] = [];
+    try {
+      for (const id of targetIds) {
+        if (precheckCancelledRef.current) break;
+        const dLabel = (() => { const d = devices.find((x) => x.id === id); return d ? getDeviceLabel(d) : id; })();
+        const r = await Promise.race([
+          window.electronAPI!.checkApksOnDevice(id, apkPaths).catch(() => null),
+          cancelSignal,
+        ]);
+        if (r === '__cancelled__' || precheckCancelledRef.current) break;
+        if (r && r.success && r.data) {
+          for (const m of r.data) {
+            const fileName = pendingApks.find((a) => a.path === m.apkPath)?.fileName || m.apkPath;
+            dups.push(`${dLabel} · ${fileName}（设备上已是 ${m.package}）`);
+          }
+        }
+      }
+    } finally {
+      precheckCancelResolveRef.current = null;
+      setIsPreChecking(false);
+      setIsUnifiedInstalling(false);
+    }
+
+    if (precheckCancelledRef.current) {
+      appendInstallLog('已中断设备比对，未开始安装。', 'info');
+      return;
+    }
+
+    if (dups.length > 0) {
+      const list = dups.slice(0, 8).join('\n');
+      const more = dups.length > 8 ? `\n…等共 ${dups.length} 项` : '';
+      setConfirmDialog({
+        message: `设备上已存在与下列 APK 内容完全相同的应用：\n\n${list}${more}\n\n确定要重复安装吗？`,
+        confirmText: '仍要安装',
+        danger: false,
+        onConfirm: () => { void runUnifiedInstall(targetIds); },
+      });
+      return;
+    }
+    await runUnifiedInstall(targetIds);
+  };
+
+  // 中断「比对设备」阶段：置标志 + 解析取消信号，让正在等待的 checkApksOnDevice race 立即返回。
+  const cancelPrecheck = () => {
+    precheckCancelledRef.current = true;
+    precheckCancelResolveRef.current?.();
+  };
+
+  // 真正执行统一安装：入队到所选在线设备，按并发上限并行安装。
+  const runUnifiedInstall = async (targetIds: string[]) => {
     appendInstallLog(`开始安装 ${pendingApks.length} 个 APK 到 ${targetIds.length} 台设备（并发 ${installConcurrency > 0 ? installConcurrency : '不限'}${installAllowDowngrade ? '，允许降级' : ''}）`);
     // 新批次：重置本次目标设备的「NEW」——只标最新这一批装上的（批次内含重试会继续累加）。
     setNewlyInstalledByDevice((prev) => {
@@ -1850,6 +1965,13 @@ function SimpleApp() {
     } finally {
       setIsUnifiedInstalling(false);
     }
+  };
+
+  // 中断正在进行的安装：请求后端取消（kill adb push/pm + 删设备端临时 APK），结果回来标「已中断」。
+  const cancelInstallItem = (item: ApkInstallQueueItem) => {
+    if (!item.installId) return;
+    void window.electronAPI?.cancelInstall(item.installId);
+    appendInstallLog(`正在中断 ${item.fileName} …`, 'info');
   };
 
   const retryDeviceInstall = async (deviceId: string) => {
@@ -2375,6 +2497,8 @@ function SimpleApp() {
         return { label: '成功', color: '#22c55e', background: '#22c55e22' };
       case 'failed':
         return { label: '失败', color: '#ef4444', background: '#ef444422' };
+      case 'cancelled':
+        return { label: '已中断', color: '#f59e0b', background: '#f59e0b22' };
       default:
         return { label: '等待中', color: '#9ca3af', background: '#4b556322' };
     }
@@ -2410,8 +2534,11 @@ function SimpleApp() {
             {/* minWidth + 居中 + 等宽数字：勾选设备数字变(0→1→2)或切「安装中…」时按钮宽度恒定，避免标题行左右抖动。 */}
             <button className="btn primary" onClick={startUnifiedInstall} disabled={!canStart} style={{ flexShrink: 0, gap: '6px', minWidth: '150px', justifyContent: 'center', fontVariantNumeric: 'tabular-nums' }}>
               <Icon name="download" size={16} />
-              {isUnifiedInstalling ? '安装中…' : `安装到 ${selectedOnlineCount} 台设备`}
+              {isPreChecking ? '比对中…' : isUnifiedInstalling ? '安装中…' : `安装到 ${selectedOnlineCount} 台设备`}
             </button>
+            {isPreChecking && (
+              <button className="btn outline o-red" onClick={cancelPrecheck} style={{ flexShrink: 0 }}>{'中断'}</button>
+            )}
           </div>
         </div>
 
@@ -2529,7 +2656,11 @@ function SimpleApp() {
                       <span style={{ color: 'var(--fg-primary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} data-tip={item.fileName}>{item.fileName}</span>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
                         <span style={{ color: statusMeta.color, backgroundColor: statusMeta.background, borderRadius: 'var(--r-pill)', padding: '2px 8px', fontSize: '12px' }}>{statusMeta.label}</span>
-                        <button className="btn outline o-red sm" onClick={() => removeApkInstallItem(deviceId, item.id)} disabled={!canRemove}>删除</button>
+                        {item.status === 'installing' ? (
+                          <button className="btn outline o-red sm" onClick={() => cancelInstallItem(item)}>{'中断'}</button>
+                        ) : (
+                          <button className="btn outline o-red sm" onClick={() => removeApkInstallItem(deviceId, item.id)} disabled={!canRemove}>删除</button>
+                        )}
                       </div>
                     </div>
                     <div style={{ marginTop: '8px' }}>
@@ -2826,6 +2957,17 @@ function SimpleApp() {
   };
 
   const renderLogcatPanel = () => {
+    // 列宽模板：前 5 列用可调宽度（px），第 6 列「消息」自适应（随最长行增宽 + 横向滚动）。表头与行共用。
+    const logGridTemplate = `${logColWidths.map((w) => `${w}px`).join(' ')} minmax(280px, max-content)`;
+    // 表头分隔条（拖拽改列宽）：贴每列右缘，col-resize 光标。可见竖线（.log-col-grip::after）+ 悬停高亮，
+    // 让用户一眼看出列可拖；样式见底部注入的 <style>。
+    const colGrip = (idx: number) => (
+      <span
+        className="log-col-grip"
+        onMouseDown={(e) => startLogColResize(idx, e)}
+        title={'拖动调整列宽'}
+      />
+    );
     // 日志级别 → Design System 级别色 token（与计数 chip、日志行级别字母统一取色）。
     const LOG_LEVEL_TOKEN: Record<LogEntry['level'], string> = {
       V: 'var(--log-verbose)',
@@ -3039,12 +3181,12 @@ function SimpleApp() {
         ) : (
           // width:max-content + minWidth:100% 让内容随最长日志行增宽，超出容器时出现横向滚动条；行与表头同宽对齐。
           <div style={{ minHeight: totalLogHeight, width: 'max-content', minWidth: '100%' }}>
-            <div style={{ position: 'sticky', top: 0, zIndex: 1, width: '100%', display: 'grid', gridTemplateColumns: '96px 64px 70px 130px 140px minmax(280px, max-content)', background: 'var(--bg-elevated)', color: 'var(--fg-tertiary)', fontWeight: 700, borderBottom: '1px solid var(--border-subtle)' }}>
-              <div style={{ padding: '8px' }}>{'\u65f6\u95f4'}</div>
-              <div style={{ padding: '8px' }}>Level</div>
-              <div style={{ padding: '8px' }}>PID</div>
-              <div style={{ padding: '8px' }}>{'\u5305\u540d'}</div>
-              <div style={{ padding: '8px' }}>{'\u6807\u7b7e'}</div>
+            <div style={{ position: 'sticky', top: 0, zIndex: 1, width: '100%', display: 'grid', gridTemplateColumns: logGridTemplate, background: 'var(--bg-elevated)', color: 'var(--fg-tertiary)', fontWeight: 700, borderBottom: '1px solid var(--border-subtle)' }}>
+              <div style={{ padding: '8px', position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap' }}>{'\u65f6\u95f4'}{colGrip(0)}</div>
+              <div style={{ padding: '8px', position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap' }}>Level{colGrip(1)}</div>
+              <div style={{ padding: '8px', position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap' }}>PID{colGrip(2)}</div>
+              <div style={{ padding: '8px', position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap' }}>{'\u5305\u540d'}{colGrip(3)}</div>
+              <div style={{ padding: '8px', position: 'relative', overflow: 'hidden', whiteSpace: 'nowrap' }}>{'\u6807\u7b7e'}{colGrip(4)}</div>
               <div style={{ padding: '8px' }}>{'\u6d88\u606f'}</div>
             </div>
             <div style={{ height: virtualTopPadding }} />
@@ -3054,7 +3196,7 @@ function SimpleApp() {
                 onClick={() => setSelectedLogEntry(log)}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '96px 64px 70px 130px 140px minmax(280px, max-content)',
+                  gridTemplateColumns: logGridTemplate,
                   width: '100%',
                   height: `${getLogRowHeight(log)}px`,
                   lineHeight: `${LOG_LINE_HEIGHT}px`,
@@ -3069,8 +3211,8 @@ function SimpleApp() {
                 <div style={{ padding: '0 8px', color: 'var(--fg-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden' }}>{new Date(log.timestamp).toLocaleTimeString('zh-CN', { hour12: false })}</div>
                 <div style={{ padding: '0 8px', color: LOG_LEVEL_TOKEN[log.level], fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden' }}>{getLevelLabel(log.level)}</div>
                 <div style={{ padding: '0 8px', color: 'var(--fg-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden' }}>{log.processId || '--'}</div>
-                <div style={{ padding: '0 8px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.packageName || '--'}</div>
-                <div style={{ padding: '0 8px', color: LOG_LEVEL_TOKEN[log.level], overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.tag}</div>
+                <div data-tip={log.packageName || undefined} style={{ padding: '0 8px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.packageName || '--'}</div>
+                <div data-tip={log.tag || undefined} style={{ padding: '0 8px', color: LOG_LEVEL_TOKEN[log.level], overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.tag}</div>
                 {/* 整条铺开多行：white-space:pre 保留换行、每个逻辑行不自动换行（高度=行数×LOG_LINE_HEIGHT 可预测）。
                     不裁切，过长单行靠日志窗口横向滚动条拖动查看；完整内容也可点开看底部详情面板。 */}
                 <div style={{ padding: '0 8px', color: 'var(--fg-secondary)', whiteSpace: 'pre' }}>{log.message}</div>
@@ -3108,6 +3250,10 @@ function SimpleApp() {
         /* 全局按钮点击反馈：所有按钮按下时轻微缩放+压暗（禁用态不响应）。新按钮自动继承。 */
         button { transition: transform 0.08s ease, filter 0.12s ease; }
         button:active:not(:disabled) { transform: scale(0.96); filter: brightness(0.85); }
+        /* 日志表头列宽分隔条：常显一条淡竖线提示「可拖」，悬停/拖动时变粗变亮（accent 色）。 */
+        .log-col-grip { position: absolute; top: 0; right: 0; height: 100%; width: 9px; cursor: col-resize; z-index: 2; }
+        .log-col-grip::after { content: ''; position: absolute; right: 3px; top: 22%; height: 56%; width: 2px; border-radius: 2px; background: var(--border-default); transition: background 0.12s ease, top 0.12s ease, height 0.12s ease; }
+        .log-col-grip:hover::after { background: var(--accent); top: 12%; height: 76%; }
         /* 瞬时动作按钮"假冷却"期内的图标转圈（配合 useCooldown）。 */
         @keyframes adm-spin { to { transform: rotate(360deg); } }
         .adm-spin { display: inline-block; animation: adm-spin 0.5s linear infinite; }

@@ -87,6 +87,8 @@ pub fn run() {
             // 应用安装（T2.2 真实现）
             commands::apps::select_apk_files,
             commands::apps::install_apk,
+            commands::apps::cancel_install,
+            commands::apps::check_apks_on_device,
             // 应用管理（T2.1 真实现）
             commands::apps::list_installed_packages,
             commands::apps::launch_app,

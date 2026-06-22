@@ -39,6 +39,8 @@ export type ElectronResult<T> = {
   code?: string;
   hint?: string;
   details?: string;
+  /** 安装被用户中断时为 true（区别于失败）。 */
+  cancelled?: boolean;
 };
 
 export interface ElectronAPI {
@@ -87,6 +89,9 @@ export interface ElectronAPI {
   onMirrorStatus: (callback: (session: MirrorSession) => void) => () => void;
   selectApkFiles: () => Promise<ElectronResult<string[]>>;
   installApk: (deviceId: string, apkPath: string, options?: { allowDowngrade?: boolean }, installId?: string) => Promise<ElectronResult<ApkInstallResult>>;
+  cancelInstall: (installId: string) => Promise<ElectronResult<undefined>>;
+  /** 查设备里是否已装有与这些待装 APK 内容完全相同的应用，返回命中项。 */
+  checkApksOnDevice: (deviceId: string, apkPaths: string[]) => Promise<ElectronResult<{ apkPath: string; package: string }[]>>;
   onInstallProgress: (callback: (progress: InstallProgress) => void) => () => void;
   uninstallApp: (deviceId: string, packageName: string) => Promise<ElectronResult<{ packageName: string; output: string }>>;
   listInstalledPackages: (deviceId: string) => Promise<ElectronResult<string[]>>;

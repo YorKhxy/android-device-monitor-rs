@@ -1,18 +1,200 @@
 //! APK 安装执行 + 失败分类（对应原 ADBManager.installApk / shouldRetryInstallWithoutStreaming /
 //! classifyInstallFailure）。单次安装一台设备一个 APK；多 APK×多设备并行/限流/队列在前端编排。
 
+use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use regex::Regex;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Notify;
 
 use super::error::AdbError;
 use super::manager::{exec_adb_capture, Captured};
 
 const INSTALL_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
+/// 安装中止的特定错误码：命令层据此把结果标成「已中断」而非「失败」。
+pub const INSTALL_CANCELLED_CODE: &str = "ADB_INSTALL_CANCELLED";
+
+// —— 安装中止注册表（与 transfer::cancel 同范式）：按 install_id 注册 Notify + cancelled 标志。
+// cancel_install 命令请求取消；install_apk 在 push 轮询 / pm install 的 select 中 await Notify 即时中断，
+// 配合 exec_adb_capture 的 kill_on_drop 真正杀掉 adb 子进程。注册表只在安装进行期间有条目。
+struct CancelEntry {
+    notify: Arc<Notify>,
+    cancelled: bool,
+}
+
+fn cancel_registry() -> &'static Mutex<HashMap<String, CancelEntry>> {
+    static R: OnceLock<Mutex<HashMap<String, CancelEntry>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cancel_register(id: &str) -> Arc<Notify> {
+    let n = Arc::new(Notify::new());
+    cancel_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.to_string(), CancelEntry { notify: n.clone(), cancelled: false });
+    n
+}
+
+fn cancel_unregister(id: &str) {
+    cancel_registry().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+}
+
+/// 请求中止某次安装（命令层 cancel_install 调用）。置 cancelled 标志 + 唤醒 select 中的 notified()。
+pub fn cancel_request(id: &str) {
+    if let Some(e) = cancel_registry().lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
+        e.cancelled = true;
+        e.notify.notify_waiters();
+    }
+}
+
+/// 已被请求取消？（轮询兜底：Notify 的边沿唤醒若错过窗口，由本标志在下一拍补上。）
+fn is_cancelled(id: &str) -> bool {
+    cancel_registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .map(|e| e.cancelled)
+        .unwrap_or(false)
+}
+
+/// 永不完成的 future：notify 为 None（未注册取消）时占位，使 select 的取消分支静默失效。
+async fn never() {
+    std::future::pending::<()>().await
+}
+
+/// 流式算文件 SHA-256（64KiB 缓冲，避免大 APK 一次性读入内存）。返回十六进制小写串。
+fn sha256_file(path: &str) -> std::io::Result<String> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 「设备上已存在与待装 APK 内容完全相同的应用」的命中项。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApkIdentityMatch {
+    pub apk_path: String, // 待装的本地 APK 路径（回填前端用）
+    pub package: String,  // 设备上内容相同的那个应用包名
+}
+
+/// 设备端某第三方应用的 base.apk 摘要（包名 / 字节大小 / 路径）。
+struct DeviceApk {
+    pkg: String,
+    size: u64,
+    path: String,
+}
+
+/// 判定「设备里是否已装有与这些 APK 内容一模一样的应用」。
+///
+/// 原理：Android 把单 APK 安装的**原始字节原样**存为 `/data/app/.../base.apk`，故设备上 base.apk 的
+/// sha256 == 源 APK 的 sha256。做法（不依赖 aapt、不解析包名）：
+///   ① 一次设备扫描列出第三方 base.apk 的 (包名,大小,路径)；
+///   ② **先按大小过滤**（秒级，通常只剩 0~1 个候选），只对大小相同者跑 `sha256sum`；
+///   ③ 与本地 APK 的 sha256 比对，命中即「内容完全相同」。
+/// best-effort：设备无 sha256sum/路径不可读等一律视作「无命中」，不阻断安装。
+pub async fn check_apks_identical(
+    adb: &Path,
+    device_id: &str,
+    apk_paths: &[String],
+) -> Vec<ApkIdentityMatch> {
+    // 本地每个 APK 的字节大小（拿不到的跳过）。
+    let local_sizes: Vec<(usize, u64)> = apk_paths
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| std::fs::metadata(p.trim()).ok().map(|m| (i, m.len())))
+        .collect();
+    if local_sizes.is_empty() {
+        return Vec::new();
+    }
+
+    // ① 设备扫描：第三方应用的 base.apk → "包名|大小|路径"。
+    let script = r#"for p in $(pm list packages -3 | sed 's/package://'); do ap=$(pm path "$p" 2>/dev/null | grep base.apk | head -1 | sed 's/package://'); [ -n "$ap" ] && echo "$p|$(stat -c %s "$ap" 2>/dev/null)|$ap"; done"#;
+    let listed = match exec_adb_capture(adb, &["-s", device_id, "shell", script], 60_000).await {
+        Ok(o) if o.success => o.stdout,
+        _ => return Vec::new(),
+    };
+    let devices: Vec<DeviceApk> = listed
+        .lines()
+        .filter_map(|l| {
+            let parts: Vec<&str> = l.trim().splitn(3, '|').collect();
+            if parts.len() == 3 {
+                let size = parts[1].trim().parse::<u64>().ok()?;
+                Some(DeviceApk { pkg: parts[0].trim().to_string(), size, path: parts[2].trim().to_string() })
+            } else {
+                None
+            }
+        })
+        .collect();
+    if devices.is_empty() {
+        return Vec::new();
+    }
+
+    // ② 收集「大小命中」的设备候选路径，一次性 sha256sum（仅对少数候选算哈希）。
+    let mut cand_paths: Vec<String> = Vec::new();
+    for (_, size) in &local_sizes {
+        for d in &devices {
+            if d.size == *size && !cand_paths.contains(&d.path) {
+                cand_paths.push(d.path.clone());
+            }
+        }
+    }
+    if cand_paths.is_empty() {
+        return Vec::new();
+    }
+    let mut sha_args: Vec<&str> = vec!["-s", device_id, "shell", "sha256sum"];
+    for p in &cand_paths {
+        sha_args.push(p.as_str());
+    }
+    let sha_out = match exec_adb_capture(adb, &sha_args, 180_000).await {
+        Ok(o) => o.stdout,
+        Err(_) => return Vec::new(),
+    };
+    // sha256sum 输出每行 "<hash>  <path>"。
+    let mut dev_hash: HashMap<String, String> = HashMap::new();
+    for line in sha_out.lines() {
+        let line = line.trim();
+        if let Some((h, p)) = line.split_once(char::is_whitespace) {
+            dev_hash.insert(p.trim().to_string(), h.trim().to_string());
+        }
+    }
+
+    // ③ 仅对「有大小候选」的本地 APK 算其 sha256（放阻塞线程池），与设备候选哈希比对。
+    let mut matches: Vec<ApkIdentityMatch> = Vec::new();
+    for (i, size) in &local_sizes {
+        let cands: Vec<&DeviceApk> = devices.iter().filter(|d| d.size == *size).collect();
+        if cands.is_empty() {
+            continue;
+        }
+        let path = apk_paths[*i].trim().to_string();
+        let local_hash = match tokio::task::spawn_blocking(move || sha256_file(&path)).await {
+            Ok(Ok(h)) => h,
+            _ => continue,
+        };
+        for d in cands {
+            if dev_hash.get(&d.path).map(|h| h.eq_ignore_ascii_case(&local_hash)).unwrap_or(false) {
+                matches.push(ApkIdentityMatch { apk_path: apk_paths[*i].clone(), package: d.pkg.clone() });
+                break;
+            }
+        }
+    }
+    matches
+}
 
 /// 安装实时进度（推送占 0-85%、pm install 占 85-100%）。经 install_progress event 推前端进度条。
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +256,35 @@ pub async fn install_apk(
     allow_downgrade: bool,
     install_id: &str,
 ) -> Result<String, AdbError> {
+    // install_id 非空才注册取消句柄（前端队列安装一定传唯一 id；缺省则退化为不可中断）。
+    let notify = if install_id.is_empty() { None } else { Some(cancel_register(install_id)) };
+    let result =
+        install_apk_inner(app, adb, device_id, apk_path, allow_downgrade, install_id, notify.as_deref()).await;
+    if !install_id.is_empty() {
+        cancel_unregister(install_id);
+    }
+    result
+}
+
+/// 「已中断」错误：命令层据 code 标成中断态而非失败。
+fn cancelled_error(name: &str) -> AdbError {
+    AdbError::custom(
+        INSTALL_CANCELLED_CODE,
+        format!("已中断安装（{name}）"),
+        "你手动中断了本次安装。",
+        "Install cancelled by user.".to_string(),
+    )
+}
+
+async fn install_apk_inner(
+    app: &AppHandle,
+    adb: &Path,
+    device_id: &str,
+    apk_path: &str,
+    allow_downgrade: bool,
+    install_id: &str,
+    notify: Option<&Notify>,
+) -> Result<String, AdbError> {
     let cleaned = apk_path.trim();
     if !cleaned.to_lowercase().ends_with(".apk") {
         return Err(AdbError::custom(
@@ -84,18 +295,29 @@ pub async fn install_apk(
         ));
     }
 
+    let name = basename(cleaned);
     let remote = format!("/data/local/tmp/adm-install-{}.apk", safe_id(install_id));
     let total_bytes = std::fs::metadata(cleaned).map(|m| m.len()).unwrap_or(0);
     emit_progress(app, install_id, 0, "pushing");
 
-    // ① push 到设备临时目录，轮询字节算实时 %（占 0-85%）。push future 与轮询并发，stat 不阻断传输。
+    // ① push 到设备临时目录（占 0-85%）。push future 与「字节轮询」「取消通知」三方 select：
+    // 取消时丢弃 push_fut → kill_on_drop 杀掉 adb push 子进程，删设备端残留临时文件后返回「已中断」。
     let push_args: [&str; 5] = ["-s", device_id, "push", cleaned, &remote];
     let push_fut = exec_adb_capture(adb, &push_args, INSTALL_TIMEOUT_MS);
     tokio::pin!(push_fut);
     let pushed = loop {
         tokio::select! {
             res = &mut push_fut => break res,
+            _ = async { match notify { Some(n) => n.notified().await, None => never().await } } => {
+                let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+                return Err(cancelled_error(&name));
+            }
             _ = tokio::time::sleep(Duration::from_millis(400)), if total_bytes > 0 => {
+                // 轮询兜底取消：错过 Notify 边沿（如正在 stat await）时在此补上。
+                if is_cancelled(install_id) {
+                    let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+                    return Err(cancelled_error(&name));
+                }
                 if let Ok(out) = exec_adb_capture(adb, &["-s", device_id, "shell", "stat", "-c", "%s", &remote], 5_000).await {
                     if out.success {
                         if let Ok(written) = out.stdout.trim().parse::<u64>() {
@@ -116,14 +338,29 @@ pub async fn install_apk(
         return Err(classify_install_failure(&combine(&pushed), cleaned));
     }
 
-    // ② pm install（占 85-100%）。pm 失败时退出码仍可能为 0 并打印 "Failure [...]"，故按输出文本判据。
+    // 推送完成、pm install 之前再查一次取消：堵住「push 结束 ~ pm select 武装 notified()」之间的边沿窗口
+    // （此刻 notify_waiters 无等待者会被错过，靠 cancelled 标志兜底）。
+    if is_cancelled(install_id) {
+        let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+        return Err(cancelled_error(&name));
+    }
+
+    // ② pm install（占 85-100%），与取消通知 select。pm 失败时退出码仍可能为 0 并打印 "Failure [...]"，故按输出文本判据。
     emit_progress(app, install_id, 88, "installing");
     let mut pm_args: Vec<&str> = vec!["-s", device_id, "shell", "pm", "install", "-r"];
     if allow_downgrade {
         pm_args.push("-d");
     }
     pm_args.push(&remote);
-    let pm = exec_adb_capture(adb, &pm_args, INSTALL_TIMEOUT_MS).await;
+    let pm_fut = exec_adb_capture(adb, &pm_args, INSTALL_TIMEOUT_MS);
+    tokio::pin!(pm_fut);
+    let pm = tokio::select! {
+        res = &mut pm_fut => res,
+        _ = async { match notify { Some(n) => n.notified().await, None => never().await } } => {
+            let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
+            return Err(cancelled_error(&name));
+        }
+    };
 
     // ③ 清设备端临时 APK（无论成败）。
     let _ = exec_adb_capture(adb, &["-s", device_id, "shell", "rm", "-f", &remote], 15_000).await;
