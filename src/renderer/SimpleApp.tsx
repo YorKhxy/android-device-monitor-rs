@@ -3186,9 +3186,14 @@ function SimpleApp() {
       </div>
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: 'var(--fg-tertiary)', fontSize: '12px' }}>
-        {(['V', 'D', 'I', 'W', 'E', 'F'] as LogEntry['level'][]).map(level => (
+        {(['V', 'D', 'I', 'W', 'E', 'F'] as LogEntry['level'][]).map(level => {
+          // 点击切换「显示级别」——与上方下拉共用 filterLevel，故两处自动同步。点已选的再点 → 回 All。
+          const active = filterLevel === level;
+          return (
           <span
             key={level}
+            onClick={() => setFilterLevel(active ? 'all' : level)}
+            data-tip={`点击按「${level} 及以上」过滤显示（与上方「显示级别」下拉同步）；再点一次取消`}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -3196,15 +3201,18 @@ function SimpleApp() {
               height: '24px',
               padding: '0 11px',
               borderRadius: 'var(--r-sm)',
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
+              background: active ? 'var(--accent-soft)' : 'var(--bg-elevated)',
+              border: active ? '1px solid var(--accent)' : '1px solid var(--border-default)',
               fontFamily: 'var(--font-mono)',
+              cursor: 'pointer',
+              userSelect: 'none',
             }}
           >
             <span style={{ color: LOG_LEVEL_TOKEN[level], fontWeight: 700 }}>{level}</span>
             <span style={{ color: 'var(--fg-tertiary)' }}>{logLevelCounts[level]}</span>
           </span>
-        ))}
+          );
+        })}
         <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', color: 'var(--fg-tertiary)' }}>{'\u4fdd\u7559'} {maxLogEntries} · {'\u6279\u91cf'} {batchUpdateSize}</span>
       </div>
 
