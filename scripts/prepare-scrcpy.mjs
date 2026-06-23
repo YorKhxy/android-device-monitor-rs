@@ -21,6 +21,23 @@ const SCRCPY_EXE = process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy';
 const destDir = path.join(repoRoot, 'src-tauri', 'scrcpy', PLATFORM);
 const destExe = path.join(destDir, SCRCPY_EXE);
 
+// scrcpy 发行包自带一份 adb(+AdbWinApi 两个 dll)。本工具所有 scrcpy 调用都用 `ADB` 环境变量钉到
+// platform-tools 的 adb（见 mirror::spawn_scrcpy / commands::apps::list_app_labels 等），故这份从不被用——
+// 删掉省体积、并去掉重复的 AdbWinApi.dll（构建/热更撞 os error 32 锁的就是它，少一份少一处隐患）。
+function stripScrcpyAdb(dir) {
+  for (const name of ['adb.exe', 'AdbWinApi.dll', 'AdbWinUsbApi.dll']) {
+    const p = path.join(dir, name);
+    if (!existsSync(p)) continue;
+    try {
+      rmSync(p, { force: true });
+      console.log(`[prepare-scrcpy] 删冗余（用 platform-tools 的 adb，不需自带）：${name}`);
+    } catch (e) {
+      // 多半是有残留 adb/scrcpy 进程占着；提示后跳过，下次重跑会再删。
+      console.warn(`[prepare-scrcpy] 删除 ${name} 失败（可能被占用，先关掉相关进程再重跑）：${e.message}`);
+    }
+  }
+}
+
 if (process.platform !== 'win32') {
   console.log(`[prepare-scrcpy] 当前平台 ${process.platform} 暂未自动准备 scrcpy（工程打包目标为 Windows）。`);
   console.log(`[prepare-scrcpy] 如需本机调试，请手动把 scrcpy 平铺到 ${destDir}/`);
@@ -28,6 +45,7 @@ if (process.platform !== 'win32') {
 }
 
 if (existsSync(destExe)) {
+  stripScrcpyAdb(destDir); // 重跑也清理已存在拷贝里那份冗余 adb
   console.log(`[prepare-scrcpy] 已就绪，跳过：${destExe}`);
   process.exit(0);
 }
@@ -87,6 +105,7 @@ async function main() {
   rmSync(destDir, { recursive: true, force: true });
   mkdirSync(path.dirname(destDir), { recursive: true });
   renameSync(inner, destDir);
+  stripScrcpyAdb(destDir); // 删掉 scrcpy 自带的冗余 adb + AdbWinApi dll
 
   rmSync(tmpZip, { force: true });
   rmSync(tmpExtract, { recursive: true, force: true });
