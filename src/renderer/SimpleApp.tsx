@@ -1876,6 +1876,7 @@ function SimpleApp() {
       }
       if (selectedDeviceRef.current?.id === deviceId) {
         setInstalledPackages(after);
+        void loadAppLabels(deviceId); // 新装应用的可读名不在旧缓存里，补刷一次 label，否则新包只显示包名直到手动刷新
       }
     }
   };
