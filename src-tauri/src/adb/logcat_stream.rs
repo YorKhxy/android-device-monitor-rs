@@ -191,6 +191,7 @@ pub fn start<'a>(
     include_history: bool,
     is_restart: bool,
     history_tail: Option<u32>,
+    capture_level: char,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
     Box::pin(async move {
     stop(device_id).await; // 幂等：换参重启。
@@ -238,7 +239,9 @@ pub fn start<'a>(
         args.push("-T".into());
         args.push(since.unwrap_or_else(|| "1".into()));
     }
-    args.push("*:V".into());
+    // 抓取级别（默认 V=全抓）：下推到 adb logcat `*:<级别>`，真正减少设备侧发送量（连完整日志落盘也随之变）。
+    // 与前端「显示级别」彻底分开：那个只过滤显示、不改抓取/落盘。capture_level 由命令层校验为 V/D/I/W/E/F。
+    args.push(format!("*:{capture_level}"));
 
     let mut cmd = Command::new(adb);
     cmd.args(&args)
@@ -266,7 +269,7 @@ pub fn start<'a>(
     let app = app.clone();
     let adb = adb.to_path_buf();
     let dev = device_id.to_string();
-    tokio::spawn(reader_loop(app, adb, dev, entry_id, stdout, pid, is_restart));
+    tokio::spawn(reader_loop(app, adb, dev, entry_id, stdout, pid, is_restart, capture_level));
     Ok(())
     })
 }
@@ -280,6 +283,7 @@ async fn reader_loop(
     stdout: tokio::process::ChildStdout,
     pid: Option<i64>,
     is_restart: bool,
+    capture_level: char,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     let mut parser = LogcatParser::new(&device_id);
@@ -353,8 +357,8 @@ async fn reader_loop(
                 .map(|m| m.get(&dev2).map(|e| e.id) != Some(stale_id))
                 .unwrap_or(true);
             if !user_stopped {
-                // 重连只收新日志(include_history=false)，history_tail 无意义传 None。
-                let _ = start(&app2, &adb2, &dev2, pid, false, true, None).await;
+                // 重连只收新日志(include_history=false)，history_tail 无意义传 None；沿用同一抓取级别。
+                let _ = start(&app2, &adb2, &dev2, pid, false, true, None, capture_level).await;
             }
         });
     } else if let Ok(mut map) = streams().lock() {

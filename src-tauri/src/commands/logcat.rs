@@ -1,6 +1,7 @@
 //! Logcat 命令层（T4-4）：start/stop 薄封装到 adb::logcat_stream。命令名 = 渲染层方法名 snake_case。
 //!
-//! `min_level` 前端恒传 'V'（抓取恒 `*:V`，等级仅作前端显示筛选），后端忽略——切换等级无需重采集、不漏低级别日志。
+//! `min_level` = **抓取级别**（下推到 adb `*:<级别>`，真正减少设备发送量 + 改变完整日志落盘内容）；
+//! 与前端「显示级别」不同（后者即时、只过滤显示、不改抓取/落盘）。校验为 V/D/I/W/E/F，非法/缺省 → 'V'(全抓)。
 //! `package_name`/`pid` 用于「相关日志」预过滤（见 logcat_stream）。
 
 use std::path::PathBuf;
@@ -60,7 +61,7 @@ async fn save_dialog(app: &AppHandle, title: &str, file_name: &str) -> Option<St
 pub async fn start_logcat(
     app: AppHandle,
     device_id: String,
-    #[allow(unused_variables)] min_level: Option<String>,
+    min_level: Option<String>,
     #[allow(unused_variables)] package_name: Option<String>,
     pid: Option<String>,
     // 是否带设备当前缓冲里的历史（默认 true，捞得到连接瞬间已打的 MVXRSDK 等爆发日志）；
@@ -75,8 +76,18 @@ pub async fn start_logcat(
         Some(p) => p,
     };
     let pid_num = pid.and_then(|s| s.trim().parse::<i64>().ok());
+    // 抓取级别校验：取首字母大写，仅认 V/D/I/W/E/F，其余一律 'V'(全抓)。
+    let capture_level = min_level
+        .as_deref()
+        .unwrap_or("V")
+        .trim()
+        .chars()
+        .next()
+        .unwrap_or('V')
+        .to_ascii_uppercase();
+    let capture_level = if matches!(capture_level, 'V' | 'D' | 'I' | 'W' | 'E' | 'F') { capture_level } else { 'V' };
 
-    match logcat_stream::start(&app, &adb, &device_id, pid_num, include_history.unwrap_or(true), false, history_tail_lines).await {
+    match logcat_stream::start(&app, &adb, &device_id, pid_num, include_history.unwrap_or(true), false, history_tail_lines, capture_level).await {
         Ok(()) => json!({ "success": true }),
         Err(e) => json!({ "success": false, "error": e }),
     }

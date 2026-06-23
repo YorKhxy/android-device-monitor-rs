@@ -81,7 +81,11 @@
   font-family: var(--font-sans); flex: 1; min-width: 0; }
 .field input::placeholder { color: var(--fg-tertiary); }
 select.nat { box-sizing: border-box; height: 34px; background: var(--bg-input); border: 1px solid var(--border-default);
-  border-radius: var(--r-sm); color: var(--fg-primary); font-size: 13px; padding: 0 8px; font-family: var(--font-sans); }
+  border-radius: var(--r-sm); color: var(--fg-primary); font-size: 13px; padding: 0 8px; font-family: var(--font-sans);
+  /* 让 Chromium 把展开的原生下拉列表也渲染成深色（否则默认白底，与深色主题不统一）。 */
+  color-scheme: dark; }
+/* 展开项的底色/文字：与悬浮菜单统一（深色弹层），覆盖原生白底。 */
+select.nat option { background-color: var(--bg-elevated); color: var(--fg-primary); }
 
 /* ---- 徽标 / 标签 ---- */
 .badge { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px;

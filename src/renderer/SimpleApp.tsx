@@ -378,6 +378,9 @@ function SimpleApp() {
   // 开抓时是否带设备当前缓冲里的历史。默认 true：捞得到「连接瞬间」等爆发日志(如 MVXRSDK)，与 Android Studio 一致。
   // 关掉则只收开抓后的新日志(后端加 -T)。注:历史能否捞到还取决于设备 logcat 缓冲是否已被挤掉(已把缓冲调大到 16M)。
   const [logIncludeHistory, setLogIncludeHistory] = useState(true);
+  // 抓取级别（min_level，下推到 adb `*:<级别>`）：默认 'V' 全抓。与「显示级别」filterLevel 是两回事——
+  // 这个改的是设备实际发什么、连完整日志落盘也跟着变，且运行中不可改、改了要重开抓。
+  const [captureLevel, setCaptureLevel] = useState<LogEntry['level']>('V');
   const [pausedLogDeviceIds, setPausedLogDeviceIds] = useState<Set<string>>(() => new Set());
   const [selectedLogEntry, setSelectedLogEntry] = useState<LogEntry | null>(null);
   const [error, setError] = useState('');
@@ -1462,12 +1465,10 @@ function SimpleApp() {
         return next;
       });
     } else {
-      // 采集端全量抓取，绝不下传任何过滤条件——等级/包名/PID 一律只做前端「显示筛选」(见 filteredLogs)，
-      // 不决定「抓哪些」。理由：① 抓取恒按 all levels(*:V)，切等级无需重采、也不漏低等级；② 包名不下传，
-      // 否则 tag/正文不含包名的 SDK/独立进程日志会被降噪(搜 mvxrsdk 搜不到)；③ PID 也不下传 adb --pid=，
-      // 否则只录该进程、其余日志连磁盘都不录、事后也搜不到。改 PID/包名/等级都即时反映在 UI，无需重新抓取。
-      const sourceLevel: LogEntry['level'] = 'V';
-      const result = await window.electronAPI!.startLogcat(selectedDevice.id, sourceLevel, undefined, undefined, logIncludeHistory);
+      // 等级改为「抓取级别」(captureLevel)：用户可选，下推到 adb `*:<级别>` 真正减少设备发送量（默认 V 全抓）。
+      // 但**包名/PID 仍不下传**——只做前端显示筛选：包名下传会把 tag/正文不含包名的 SDK/独立进程日志降噪掉
+      // (搜 mvxrsdk 搜不到)；PID 下传 adb --pid= 会只录该进程、其余连磁盘都不录。这两者保持"全抓"。
+      const result = await window.electronAPI!.startLogcat(selectedDevice.id, captureLevel, undefined, undefined, logIncludeHistory);
       if (result.success) {
         state.running = true;
         state.paused = false;
@@ -3019,6 +3020,25 @@ function SimpleApp() {
           />
           {'\u5305\u542b\u5386\u53f2'}
         </label>
+        <label
+          data-tip={'\u3010\u6293\u53d6\u7ea7\u522b\u3011\u63a7\u5236 adb \u5b9e\u9645\u4ece\u8bbe\u5907\u6293\u54ea\u4e9b\u7ea7\u522b\u7684\u65e5\u5fd7\u3002\u9009\u9ad8\u4e86\uff08\u5982\u53ea\u6293 D \u4ee5\u4e0a\uff09\u8bbe\u5907\u5c31\u4e0d\u518d\u53d1\u4f4e\u7ea7\u65e5\u5fd7\u2014\u2014\u6d2a\u6d41\u53d8\u5c0f\u3001\u9519\u8bef\u5728\u7f13\u51b2\u91cc\u6d3b\u5f97\u66f4\u4e45\uff0c\u4f46\u5b8c\u6574\u65e5\u5fd7\u843d\u76d8\u4e5f\u4f1a\u8ddf\u7740\u5c11\u8fd9\u4e9b\u7ea7\u522b\u3002\n\u2260 \u4e0b\u65b9\u300c\u663e\u793a\u7ea7\u522b\u300d\uff1a\u90a3\u4e2a\u662f\u5373\u65f6\u7684\u3001\u53ea\u8fc7\u6ee4\u5f53\u524d\u663e\u793a\uff0c\u4e0d\u6539\u6293\u53d6\u4e5f\u4e0d\u6539\u843d\u76d8\u3002\n\u26a0 \u8fd0\u884c\u4e2d\u4e0d\u53ef\u6539\uff0c\u6539\u4e86\u9700\u91cd\u65b0\u5f00\u6293\u624d\u751f\u6548\u3002'}
+          style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px', color: 'var(--fg-secondary)', cursor: isSelectedLogcatRunning ? 'not-allowed' : 'pointer', opacity: isSelectedLogcatRunning ? 0.5 : 1 }}
+        >
+          {'\u6293\u53d6\u7ea7\u522b'}
+          <select
+            className="nat"
+            value={captureLevel}
+            disabled={isSelectedLogcatRunning}
+            onChange={(e) => setCaptureLevel(e.target.value as LogEntry['level'])}
+            style={{ width: '150px', cursor: isSelectedLogcatRunning ? 'not-allowed' : 'pointer' }}
+          >
+            <option value="V">{'\u5168\u6293 (V)'}</option>
+            <option value="D">{'D \u53ca\u4ee5\u4e0a\uff08\u4e0d\u6293 V\uff09'}</option>
+            <option value="I">{'I \u53ca\u4ee5\u4e0a\uff08\u7701\u6d41\uff09'}</option>
+            <option value="W">{'W \u53ca\u4ee5\u4e0a\uff08\u53ea\u8b66\u544a/\u9519\u8bef\uff09'}</option>
+            <option value="E">{'E \u53ca\u4ee5\u4e0a\uff08\u53ea\u9519\u8bef\uff09'}</option>
+          </select>
+        </label>
         <button
           onClick={toggleSelectedDevicePause}
           disabled={!isSelectedLogcatRunning}
@@ -3065,7 +3085,7 @@ function SimpleApp() {
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center', padding: '12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)' }}>
-        <select className="nat" style={{ width: '130px', flexShrink: 0 }} value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as LogLevelFilter)}>
+        <select className="nat" data-tip={'【显示级别】只过滤当前看到的内容，即时生效，不改变抓取、也不影响完整日志落盘。想真正少抓（减小洪流）请用上方「抓取级别」。'} style={{ width: '130px', flexShrink: 0 }} value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as LogLevelFilter)}>
           <option value="all">All levels</option>
           <option value="V">Verbose+</option>
           <option value="D">Debug+</option>
