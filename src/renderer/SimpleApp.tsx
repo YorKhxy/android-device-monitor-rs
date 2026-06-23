@@ -3086,8 +3086,9 @@ function SimpleApp() {
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', alignItems: 'center', padding: '12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--r-md)' }}>
         <select className="nat" data-tip={'【显示级别】只过滤当前看到的内容，即时生效，不改变抓取、也不影响完整日志落盘。想真正少抓（减小洪流）请用上方「抓取级别」。'} style={{ width: '130px', flexShrink: 0 }} value={filterLevel} onChange={(e) => setFilterLevel(e.target.value as LogLevelFilter)}>
-          <option value="all">All levels</option>
-          <option value="V">Verbose+</option>
+          {/* 「Verbose+」即显示全部（V 是最低级，≥V = 全部）——对齐 Android Studio，不再单列冗余的「All levels」。
+              内部仍用 'all' 哨兵：它驱动「无过滤=300ms 慢节流」防洪流假死的快路径，故保留不改值、只改显示文字。 */}
+          <option value="all">Verbose+</option>
           <option value="D">Debug+</option>
           <option value="I">Info+</option>
           <option value="W">Warn+</option>
@@ -3187,13 +3188,16 @@ function SimpleApp() {
 
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', color: 'var(--fg-tertiary)', fontSize: '12px' }}>
         {(['V', 'D', 'I', 'W', 'E', 'F'] as LogEntry['level'][]).map(level => {
-          // 点击切换「显示级别」——与上方下拉共用 filterLevel，故两处自动同步。点已选的再点 → 回 All。
-          const active = filterLevel === level;
+          // 点击切换「显示级别」——与上方下拉共用 filterLevel，故两处自动同步。点已选的再点 → 回 Verbose+(全部)。
+          // V chip 特例：「V 及以上」= 全部 = 下拉的「Verbose+」(内部哨兵 'all')，故点 V → 'all'、显示全部时高亮 V。
+          const active = level === 'V' ? filterLevel === 'all' : filterLevel === level;
           return (
           <span
             key={level}
-            onClick={() => setFilterLevel(active ? 'all' : level)}
-            data-tip={`点击按「${level} 及以上」过滤显示（与上方「显示级别」下拉同步）；再点一次取消`}
+            onClick={() => setFilterLevel(level === 'V' ? 'all' : (filterLevel === level ? 'all' : level))}
+            data-tip={level === 'V'
+              ? '点击显示全部级别（Verbose+，即 V 及以上 = 全部）'
+              : `点击按「${level} 及以上」过滤显示（与上方「显示级别」下拉同步）；再点一次取消`}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
