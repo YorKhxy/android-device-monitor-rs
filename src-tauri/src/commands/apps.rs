@@ -2,14 +2,53 @@
 //! 对应原 ADBManager.ts 的 listInstalledPackages / launchApp / forceStopApp / uninstallApp。
 //! 命令名 = 渲染层方法名 snake_case；参数 rename_all="camelCase" 接收前端 camelCase。
 
-use serde::Deserialize;
+use std::process::Stdio;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
+use tokio::process::Command;
+use tokio::time::timeout;
 
-use crate::adb::binary;
 use crate::adb::error::{classify_adb_error, AdbError};
-use crate::adb::{install, manager};
+use crate::adb::{binary, install, manager, scrcpy};
+
+/// 已安装应用（带可读名）：scrcpy --list-apps 解析出的一项。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledApp {
+    package: String,
+    label: String,
+    system: bool, // scrcpy 行首 `*`=系统应用，`-`=用户安装
+}
+
+/// 解析 scrcpy `--list-apps` 输出（走 stderr）：每行形如 ` * 应用名   com.x.y` / ` - 应用名   com.x.y`。
+/// 应用名可含空格，包名是最后一个空白分隔 token；非「*/-」开头的日志行跳过。
+fn parse_scrcpy_apps(text: &str) -> Vec<InstalledApp> {
+    let mut apps = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let (system, body) = if let Some(b) = trimmed.strip_prefix("* ") {
+            (true, b)
+        } else if let Some(b) = trimmed.strip_prefix("- ") {
+            (false, b)
+        } else {
+            continue;
+        };
+        let mut parts: Vec<&str> = body.split_whitespace().collect();
+        let package = match parts.pop() {
+            Some(p) => p,
+            None => continue,
+        };
+        if !package.contains('.') {
+            continue; // 不像包名 → 跳过（防混入噪声行）
+        }
+        apps.push(InstalledApp { package: package.to_string(), label: parts.join(" "), system });
+    }
+    apps
+}
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -72,6 +111,56 @@ pub async fn list_installed_packages(app: AppHandle, device_id: String) -> Value
             json!({ "success": true, "data": packages })
         }
     }
+}
+
+/// 读取设备上应用的可读名（label）：跑内置 `scrcpy --list-apps`（设备侧用 PackageManager 取 label，
+/// 不需要 aapt/pull APK/root）。比 `pm list` 慢，前端按设备缓存、不每次刷新都跑。返回 [{package,label,system}]。
+/// 钉 `ADB` 环境变量到内置 adb，避免 scrcpy 自带 adb 与本工具 server 互踢。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn list_app_labels(app: AppHandle, device_id: String) -> Value {
+    let scrcpy_path = match scrcpy::resolve_scrcpy_path(&app) {
+        None => return json!({ "success": false, "error": "未找到内置 scrcpy，无法读取应用名" }),
+        Some(p) => p,
+    };
+    let adb = binary::resolve_adb_path(&app);
+
+    let mut cmd = Command::new(&scrcpy_path);
+    cmd.arg("--list-apps")
+        .arg("-s")
+        .arg(&device_id)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped()) // scrcpy 把应用清单打到 stdout（INFO 日志也在这；stderr 只有 adb push 进度）
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(a) = &adb {
+        cmd.env("ADB", a);
+    }
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW); // 隐藏 scrcpy 控制台黑窗
+    }
+
+    // --list-apps 要在设备侧逐个解析 label，较慢；给 90s 超时兜底。
+    let out = match timeout(Duration::from_secs(90), cmd.output()).await {
+        Err(_) => return json!({ "success": false, "error": "读取应用名超时（scrcpy --list-apps）" }),
+        Ok(Err(e)) => return json!({ "success": false, "error": format!("启动 scrcpy 失败：{e}") }),
+        Ok(Ok(o)) => o,
+    };
+    // 应用清单在 stdout；stderr 只有 adb push 进度。合并解析以防不同 scrcpy 版本路由差异。
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let apps = parse_scrcpy_apps(&text);
+    if apps.is_empty() {
+        // 没解析到应用 → 把 scrcpy 输出尾部带回前端诊断（adb 找不到 / 设备离线 / scrcpy 自身报错等）。
+        let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join(" | ");
+        return json!({ "success": false, "error": format!("scrcpy 未列出应用 | {tail}") });
+    }
+    json!({ "success": true, "data": apps })
 }
 
 /// 启动应用：`monkey -p <pkg> -c android.intent.category.LAUNCHER 1`，判据 "Events injected: 1"。

@@ -91,6 +91,7 @@ pub fn run() {
             commands::apps::check_apks_on_device,
             // 应用管理（T2.1 真实现）
             commands::apps::list_installed_packages,
+            commands::apps::list_app_labels,
             commands::apps::launch_app,
             commands::apps::force_stop_app,
             commands::apps::uninstall_app,

@@ -94,6 +94,7 @@ const api: ElectronAPI = {
   onInstallProgress: (cb) => sub('install_progress', cb),
   uninstallApp: (deviceId, packageName) => call('uninstall_app', { deviceId, packageName }),
   listInstalledPackages: (deviceId) => call('list_installed_packages', { deviceId }),
+  listAppLabels: (deviceId) => call('list_app_labels', { deviceId }),
   launchApp: (deviceId, packageName) => call('launch_app', { deviceId, packageName }),
   forceStopApp: (deviceId, packageName) => call('force_stop_app', { deviceId, packageName }),
 

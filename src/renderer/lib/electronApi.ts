@@ -95,6 +95,8 @@ export interface ElectronAPI {
   onInstallProgress: (callback: (progress: InstallProgress) => void) => () => void;
   uninstallApp: (deviceId: string, packageName: string) => Promise<ElectronResult<{ packageName: string; output: string }>>;
   listInstalledPackages: (deviceId: string) => Promise<ElectronResult<string[]>>;
+  /** 读应用可读名（scrcpy --list-apps，较慢）：[{package,label,system}]。 */
+  listAppLabels: (deviceId: string) => Promise<ElectronResult<{ package: string; label: string; system: boolean }[]>>;
   installWeakNetHelper: (deviceId: string) => Promise<ElectronResult<{ output: string }>>;
   startWeakNet: (deviceId: string, profile: WeakNetworkProfile) => Promise<ElectronResult<{ output: string }>>;
   stopWeakNet: (deviceId: string) => Promise<ElectronResult<{ output: string }>>;

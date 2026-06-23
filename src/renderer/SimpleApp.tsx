@@ -302,6 +302,10 @@ function SimpleApp() {
     });
   const [installedPackages, setInstalledPackages] = useState<string[]>([]);
   const [installedPackagesLoading, setInstalledPackagesLoading] = useState(false);
+  // 应用可读名（package → label，来自 scrcpy --list-apps，较慢，异步叠加到列表上）。空 = 还没取到/无名，回退显示包名。
+  const [appLabels, setAppLabels] = useState<Record<string, string>>({});
+  const [appLabelsLoading, setAppLabelsLoading] = useState(false);
+  const [appLabelsError, setAppLabelsError] = useState<string | null>(null); // 取应用名失败原因（诊断用，显示在标题旁）
   // 已安装应用「刷新」按钮的点击反馈：假冷却让图标转圈（参考采集回看刷新），快操作也有可见反馈。
   const appRefreshCooldown = useCooldown();
   // 设备「刷新设备」「连接 USB」按钮同款点击反馈（假冷却转圈 + 禁用），让本就很快的操作也有可见反馈。
@@ -1021,10 +1025,14 @@ function SimpleApp() {
     // 切设备只是切换显示哪台，NEW 按设备存（newlyInstalledByDevice），不清除——否则批量装多台后切看就丢标识。
     if (selectedDevice?.id) {
       setInstalledPackages([]);
+      setAppLabels({});
+      setAppLabelsError(null);
       setAppFilter('');
       loadInstalledPackages();
     } else {
       setInstalledPackages([]);
+      setAppLabels({});
+      setAppLabelsError(null);
       setAppFilter('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2314,10 +2322,34 @@ function SimpleApp() {
     }
   };
 
+  // 异步取应用可读名（scrcpy --list-apps，较慢）叠加到列表。失败/超时静默——不影响包名列表与各项操作。
+  const loadAppLabels = async (deviceId: string) => {
+    if (!hasElectronAPI()) return;
+    setAppLabelsLoading(true);
+    setAppLabelsError(null);
+    try {
+      const r = await window.electronAPI!.listAppLabels(deviceId);
+      if (selectedDeviceRef.current?.id !== deviceId) return; // 设备已切换，丢弃过期结果
+      if (r.success && r.data) {
+        const map: Record<string, string> = {};
+        for (const a of r.data) { if (a.label) map[a.package] = a.label; }
+        setAppLabels(map);
+        if (Object.keys(map).length === 0) setAppLabelsError('scrcpy 未返回任何应用名');
+      } else {
+        setAppLabelsError(r.error || '读取应用名失败');
+      }
+    } catch (e) {
+      setAppLabelsError((e as Error).message);
+    } finally {
+      if (selectedDeviceRef.current?.id === deviceId) setAppLabelsLoading(false);
+    }
+  };
+
   const loadInstalledPackages = async () => {
     if (!selectedDevice || !hasElectronAPI()) return;
     const targetDeviceId = selectedDevice.id;
     setInstalledPackagesLoading(true);
+    void loadAppLabels(targetDeviceId); // 并行取应用名，列表先用包名秒出、名字到了再叠加
     try {
       const result = await window.electronAPI!.listInstalledPackages(targetDeviceId);
       if (selectedDeviceRef.current?.id !== targetDeviceId) return; // 设备已切换，丢弃过期结果
@@ -3971,7 +4003,7 @@ function SimpleApp() {
                       <h2 style={{ fontSize: '15px', fontWeight: 600, margin: 0, color: 'var(--fg-primary)', whiteSpace: 'nowrap' }}>
                         {'已安装应用'}
                         <span style={{ fontSize: '12.5px', color: 'var(--fg-tertiary)', marginLeft: '8px', fontWeight: 400 }}>
-                          {installedPackagesLoading ? '加载中…' : `共 ${installedPackages.length} 个`}
+                          {installedPackagesLoading ? '加载中…' : `共 ${installedPackages.length} 个`}{appLabelsLoading ? ' · 读取应用名…' : (appLabelsError ? ` · ⚠ 应用名：${appLabelsError}` : '')}
                         </span>
                       </h2>
                       <div style={{ display: 'flex', gap: '8px', flex: 1, maxWidth: '420px' }}>
@@ -3979,7 +4011,7 @@ function SimpleApp() {
                           <Icon name="search" />
                           <input
                             type="text"
-                            placeholder={'搜索包名'}
+                            placeholder={'搜索应用名 / 包名'}
                             value={appFilter}
                             onChange={(e) => setAppFilter(e.target.value)}
                           />
@@ -3994,7 +4026,9 @@ function SimpleApp() {
 
                     {(() => {
                       const keyword = appFilter.trim().toLowerCase();
-                      const matched = keyword ? installedPackages.filter(pkg => pkg.toLowerCase().includes(keyword)) : installedPackages;
+                      const matched = keyword
+                        ? installedPackages.filter(pkg => pkg.toLowerCase().includes(keyword) || (appLabels[pkg] || '').toLowerCase().includes(keyword))
+                        : installedPackages;
                       // 当前选中设备的「NEW」集合（按设备存，切设备不丢）。新装的包浮到列表顶部，稳定排序保留原顺序。
                       const deviceNew = newlyInstalledByDevice[selectedDevice?.id || ''] || EMPTY_PACKAGE_SET;
                       const filtered = deviceNew.size > 0
@@ -4020,8 +4054,17 @@ function SimpleApp() {
                                 className="app-row"
                                 style={{ display: 'flex', alignItems: 'center', gap: '11px', padding: '8px 12px', borderTop: '1px solid var(--border-subtle)' }}
                               >
-                                <AppAvatar name={pkg} size={32} />
-                                <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-mono)', fontSize: '12.5px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pkg}</span>
+                                <AppAvatar name={appLabels[pkg] || pkg} size={32} />
+                                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1px' }}>
+                                  {appLabels[pkg] ? (
+                                    <>
+                                      <span style={{ fontSize: '13px', color: 'var(--fg-primary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{appLabels[pkg]}</span>
+                                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--fg-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pkg}</span>
+                                    </>
+                                  ) : (
+                                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12.5px', color: 'var(--fg-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pkg}</span>
+                                  )}
+                                </div>
                                 {deviceNew.has(pkg) && (
                                   <span data-tip={'本次新安装'} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', height: 20, padding: '0 7px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.5px', color: 'var(--info)', background: 'var(--info-soft)', border: '1px solid var(--accent-soft-bd)', borderRadius: 'var(--r-pill)' }}>{'NEW'}</span>
                                 )}
