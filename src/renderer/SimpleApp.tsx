@@ -207,6 +207,10 @@ function SimpleApp() {
   const [nameDraft, setNameDraft] = useState(''); // 自定义名编辑草稿：点「确认」才按 SN 保存
   const nameSaveCooldown = useCooldown();          // 确认按钮点击特效（与「刷新设备」同款）
   const [activeTab, setActiveTab] = useState<TabType>('devices');
+  // 供 bumpLogVersionThrottled 在渲染外读取：不在「日志」页时跳过重渲染（store 照常 append、不丢日志），
+  // 避免后台监控时每 ~300ms 空跑一次 filteredLogs/行高/整页重渲染。切回日志页由下方 effect 补一次刷新。
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   // 侧边设备栏折叠：收起后宽度归零，主内容（含性能曲线）自动占满腾出的横向空间。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mirrorSessionsByDeviceId, setMirrorSessionsByDeviceId] = useState<Record<string, MirrorSession>>({});
@@ -353,6 +357,13 @@ function SimpleApp() {
   const [pairing, setPairing] = useState(false);
   const [packageFilter, setPackageFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  // 搜索防抖：输入框即时回显 searchTerm，但喂给过滤的是滞后 ~180ms 的 debouncedSearch——
+  // 否则每敲一个字都让 filteredLogs 缓存键失效、全库 O(2万) 重过滤一次（打「crash」要重建 5 次）。
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(searchTerm), 180);
+    return () => window.clearTimeout(t);
+  }, [searchTerm]);
   // 日志搜索关键字历史：重启工具仍在，可在搜索框下拉直接选。
   const [searchHistory, setSearchHistory] = useState<string[]>(() => loadSearchHistory());
   // 自定义历史下拉的显隐（不用原生 datalist，以统一暗色 UI 风格）。
@@ -599,6 +610,8 @@ function SimpleApp() {
   const hasActiveLogFilterRef = useRef(false);
   const logRenderThrottleRef = useRef<{ last: number; timer: number | null }>({ last: 0, timer: null });
   const bumpLogVersionThrottled = useCallback(() => {
+    // 不在日志页就别触发重渲染——日志仍在后台入库，切回时由 activeTab effect 补一次刷新。
+    if (activeTabRef.current !== 'logs') return;
     const t = logRenderThrottleRef.current;
     const now = Date.now();
     const since = now - t.last;
@@ -614,6 +627,11 @@ function SimpleApp() {
       }, MIN_INTERVAL - since);
     }
   }, []);
+
+  // 切回「日志」页时补一次刷新：off-tab 期间 store 一直在 append 但没重渲染，进来需让 filteredLogs/虚拟列表追平最新。
+  useEffect(() => {
+    if (activeTab === 'logs') setLogVersion((v) => v + 1);
+  }, [activeTab]);
 
   const flushDeviceLogBuffer = useCallback((deviceId: string) => {
     const state = logStatesRef.current.get(deviceId);
@@ -2698,7 +2716,7 @@ function SimpleApp() {
   };
 
   const hasActiveLogFilter = Boolean(
-    searchTerm.trim() ||
+    debouncedSearch.trim() ||
     filterLevel !== 'all' ||
     logTagFilter.trim() ||
     logPackageFilter.trim() ||
@@ -2746,14 +2764,14 @@ function SimpleApp() {
 
     // 搜索框：正则开关开 → 旧行为(整串当一个正则，跨字段命中)；关 → AS 查询语言(默认)。
     let searchRegex: RegExp | null = null;
-    if (useRegexSearch && searchTerm.trim()) {
+    if (useRegexSearch && debouncedSearch.trim()) {
       try {
-        searchRegex = new RegExp(searchTerm.trim(), 'i');
+        searchRegex = new RegExp(debouncedSearch.trim(), 'i');
       } catch {
         searchRegex = null;
       }
     }
-    const compiledQuery = useRegexSearch ? null : compileLogcatQuery(searchTerm);
+    const compiledQuery = useRegexSearch ? null : compileLogcatQuery(debouncedSearch);
     const mineCtx = { minePackages: minePackagesSet };
 
     // 单条匹配判定（逻辑与原全量版逐字一致，只是抽成函数供全量/增量两条路径共用）。
@@ -2797,7 +2815,7 @@ function SimpleApp() {
     // 缓存有效性键：任一过滤条件/正则开关变了即失效 → 全量重建。
     // 用到 package:mine 时把 mine 集合大小并入键，设备切换/应用列表刷新致 mine 集合变化也能触发重建。
     const mineSig = compiledQuery?.usesMine ? minePackagesSet.size : 0;
-    const key = JSON.stringify([searchTerm, useRegexSearch, filterLevel, tagFilter, packageFilter, pidFilter, mineSig]);
+    const key = JSON.stringify([debouncedSearch, useRegexSearch, filterLevel, tagFilter, packageFilter, pidFilter, mineSig]);
     const appendedTotal = store.appendedTotal;
     const droppedTotal = appendedTotal - store.count; // 当前最旧条目的全局序号（< 它的都已淘汰）。
     let cache = filteredCacheRef.current;
@@ -2842,7 +2860,7 @@ function SimpleApp() {
     }
 
     return cache.items.map(x => x.log);
-  }, [logVersion, currentLogState, hasActiveLogFilter, searchTerm, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch, selectedDeviceId, minePackagesSet]);
+  }, [logVersion, currentLogState, hasActiveLogFilter, debouncedSearch, filterLevel, logTagFilter, logPackageFilter, logPidFilter, useRegexSearch, selectedDeviceId, minePackagesSet]);
 
   // 变高虚拟滚动：每条日志高度按行数变化，需先把当前可见列表物化成数组以便算累计偏移。
   const activeLogList = useMemo<LogEntry[]>(
