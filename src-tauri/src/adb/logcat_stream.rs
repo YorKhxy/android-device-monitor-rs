@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use regex::Regex;
@@ -103,6 +103,33 @@ pub(crate) async fn refresh_pid_package_cache(adb: &Path, device_id: &str) -> Ha
     map
 }
 
+/// 独立任务：周期性 `ps -A` 刷新共享的 PID→包名表，把这次会阻塞的 adb 往返从 reader 循环里彻底剥离。
+/// 自终止：每轮先查注册表，本流已被 stop / 被新流替换（id 不再匹配）就退出（与 reader 的 still_ours 同范式）。
+fn spawn_pid_refresh(
+    adb: PathBuf,
+    device_id: String,
+    entry_id: u64,
+    shared: Arc<Mutex<HashMap<i64, String>>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(PID_REFRESH_MS as u64)).await;
+            let still_ours = streams()
+                .lock()
+                .ok()
+                .map(|m| m.get(&device_id).map(|e| e.id) == Some(entry_id))
+                .unwrap_or(false);
+            if !still_ours {
+                break;
+            }
+            let map = refresh_pid_package_cache(&adb, &device_id).await;
+            if let Ok(mut g) = shared.lock() {
+                *g = map;
+            }
+        }
+    });
+}
+
 fn flush(app: &AppHandle, buffer: &mut Vec<LogEntry>) {
     if buffer.is_empty() {
         return;
@@ -116,13 +143,17 @@ fn push_entry(
     device_id: &str,
     entry_id: u64,
     mut entry: LogEntry,
-    pid_pkg: &HashMap<i64, String>,
+    pid_pkg: &Mutex<HashMap<i64, String>>,
     buffer: &mut Vec<LogEntry>,
     app: &AppHandle,
     last_emit: &mut Instant,
 ) {
-    if let Some(pkg) = pid_pkg.get(&entry.process_id) {
-        entry.package_name = Some(pkg.clone());
+    // 共享 PID→包名表由独立刷新任务周期更新（见 spawn_pid_refresh）；这里只做一次极短的无竞争锁读，
+    // 不再像旧版那样在 reader 循环里 await `ps -A`（那会每 2s 停读、洪流下卡顿）。
+    if let Ok(g) = pid_pkg.lock() {
+        if let Some(pkg) = g.get(&entry.process_id) {
+            entry.package_name = Some(pkg.clone());
+        }
     }
     // 完整日志落盘：解析后单行带归属包名列，与老工具 fullLogRecorder.write 同格式（全量、全等级，**逐行不丢**）。
     full_log_recorder::append(device_id, entry_id, &format_line(&entry));
@@ -259,9 +290,10 @@ async fn reader_loop(
     // 完整日志录制（T4-5）：用户开抓 truncate「从监控第一行」；自动重连(is_restart)追加、保留断流前内容。失败不阻断抓取。
     let _ = full_log_recorder::begin(&device_id, entry_id, is_restart);
 
-    // PID→归属包名缓存：开流先建一次，之后周期刷新（应对目标 App 重启换 pid）。
-    let mut pid_pkg = refresh_pid_package_cache(&adb, &device_id).await;
-    let mut last_pid_refresh = Instant::now();
+    // PID→归属包名缓存：开流先建一次（这一发同步等待可接受），之后由**独立任务**周期刷新——
+    // 共享 Arc<Mutex>，reader 只做无竞争锁读，绝不在循环里 await `ps -A`（旧版那样每 2s 停读、洪流下卡顿）。
+    let pid_pkg = Arc::new(Mutex::new(refresh_pid_package_cache(&adb, &device_id).await));
+    spawn_pid_refresh(adb.clone(), device_id.clone(), entry_id, pid_pkg.clone());
     let mut lines_read: u64 = 0; // 读到的行数：EOF 时据此判断是否自动重连（读 0 行就 EOF 视为设备断开，不重连防死循环）。
 
     loop {
@@ -288,10 +320,7 @@ async fn reader_loop(
                 flush(&app, &mut buffer);
                 last_emit = Instant::now(); // 与 push_entry 限频共用锚点：低频时由 ticker 及时推、不丢实时性。
                 full_log_recorder::flush(&device_id, entry_id); // 定时刷盘，保证导出拿到最新。
-                if last_pid_refresh.elapsed().as_millis() >= PID_REFRESH_MS {
-                    pid_pkg = refresh_pid_package_cache(&adb, &device_id).await;
-                    last_pid_refresh = Instant::now();
-                }
+                // PID→包名刷新已挪到 spawn_pid_refresh 独立任务，这里不再 await `ps -A`。
             }
         }
     }

@@ -49,7 +49,12 @@ pub fn begin(device_id: &str, id: u64, append: bool) -> std::io::Result<()> {
         File::create(&path)? // create = truncate 已存在。
     };
     if let Ok(mut map) = recorders().lock() {
-        map.insert(device_id.to_string(), Recorder { id, writer: BufWriter::new(file) });
+        // 256KiB 缓冲（默认仅 8KiB）：高频设备 ~4 万行/秒下，把落盘 syscall 频率从 ~千次/秒降到 ~30 次/秒，
+        // 给 reader 路径的 writeln! 更多纯内存拷贝、更少触发真实写，进一步减小对读取吞吐的占用。
+        map.insert(
+            device_id.to_string(),
+            Recorder { id, writer: BufWriter::with_capacity(256 * 1024, file) },
+        );
     }
     Ok(())
 }
