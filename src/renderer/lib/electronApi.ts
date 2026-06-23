@@ -92,6 +92,8 @@ export interface ElectronAPI {
   cancelInstall: (installId: string) => Promise<ElectronResult<undefined>>;
   /** 查设备里是否已装有与这些待装 APK 内容完全相同的应用，返回命中项。 */
   checkApksOnDevice: (deviceId: string, apkPaths: string[]) => Promise<ElectronResult<{ apkPath: string; package: string }[]>>;
+  /** 校验一批本地文件路径当前是否仍存在（APK 安装历史失效判定），返回仍存在的路径子集。 */
+  checkFilesExist: (paths: string[]) => Promise<ElectronResult<string[]>>;
   onInstallProgress: (callback: (progress: InstallProgress) => void) => () => void;
   uninstallApp: (deviceId: string, packageName: string) => Promise<ElectronResult<{ packageName: string; output: string }>>;
   listInstalledPackages: (deviceId: string) => Promise<ElectronResult<string[]>>;

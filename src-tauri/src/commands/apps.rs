@@ -339,6 +339,17 @@ pub async fn check_apks_on_device(app: AppHandle, device_id: String, apk_paths: 
     json!({ "success": true, "data": matches })
 }
 
+/// 校验一批本地文件路径当前是否仍存在（APK 安装历史失效判定用，与 adb 无关，纯文件系统检查）。
+/// 返回仍存在的路径子集；前端据此把缺失项置灰禁用。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn check_files_exist(paths: Vec<String>) -> Value {
+    let existing: Vec<String> = paths
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).is_file())
+        .collect();
+    json!({ "success": true, "data": existing })
+}
+
 /// 弹原生多选文件对话框选 APK（.apk 过滤）。取消 → 空数组（对齐原版 canceled）。
 #[tauri::command]
 pub async fn select_apk_files(app: AppHandle) -> Value {

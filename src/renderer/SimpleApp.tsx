@@ -23,6 +23,14 @@ import {
   removeSearchHistory,
   saveSearchHistory,
 } from './lib/searchHistoryStore';
+import {
+  loadApkHistory,
+  saveApkHistory,
+  upsertApkHistory,
+  removeApkHistory,
+  pruneMissingApkHistory,
+  type ApkHistoryItem,
+} from './lib/apkHistoryStore';
 import { isTransferActive } from './lib/fileTransferManager';
 import { compileLogcatQuery } from './lib/logcatFilter';
 import {
@@ -396,6 +404,10 @@ function SimpleApp() {
   const [apkInstallStates, setApkInstallStates] = useState<Record<string, DeviceApkInstallState>>({});
   const [pendingApks, setPendingApks] = useState<{ path: string; fileName: string }[]>([]);
   const [isApkDragOver, setIsApkDragOver] = useState(false); // 拖拽 APK 到待安装区时高亮
+  // APK 安装历史（装成功才记，按 path 去重，持久化 localStorage，重启仍在）。
+  const [apkHistory, setApkHistory] = useState<ApkHistoryItem[]>(() => loadApkHistory());
+  // 历史项里源文件仍存在的 path 集合（运行时态，由后端 check_files_exist 校验）；不在集合内 = 文件已失效，置灰禁用。
+  const [apkHistoryExisting, setApkHistoryExisting] = useState<Set<string>>(new Set());
   // APK 拖放区元素 + 常驻 Tauri 拖放监听用的 ref（避免闭包捕获旧状态/旧函数）。
   const apkDropZoneRef = useRef<HTMLDivElement>(null);
   const addApkRef = useRef<(paths: string[]) => void>(() => {});
@@ -1037,6 +1049,24 @@ function SimpleApp() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDevice?.id]);
+
+  // APK 安装历史变化即持久化，并异步校验每条源文件是否仍在 PC 上（失效项前端置灰禁用）。
+  useEffect(() => {
+    saveApkHistory(apkHistory);
+    if (!hasElectronAPI() || apkHistory.length === 0) {
+      setApkHistoryExisting(new Set());
+      return;
+    }
+    let cancelled = false;
+    const paths = apkHistory.map((h) => h.path);
+    window.electronAPI!.checkFilesExist(paths)
+      .then((r) => {
+        if (cancelled) return;
+        setApkHistoryExisting(new Set(r.success && r.data ? r.data : paths)); // 查不动时一律按存在，不误置灰
+      })
+      .catch(() => { if (!cancelled) setApkHistoryExisting(new Set(paths)); });
+    return () => { cancelled = true; };
+  }, [apkHistory]);
 
   // 轮询当前设备「运行中」应用：仅设备页 + 设备已连接时，每 4s 刷新，让运行标识反映真实状态
   //（不管谁启动的）。离开设备页 / 切设备 / 断开即清空，避免显示过期运行态。
@@ -1770,6 +1800,29 @@ function SimpleApp() {
     setPendingApks((prev) => prev.filter((a) => a.path !== path));
   };
 
+  // 从安装历史移除一条（仅删历史记忆，不动 PC 上的实际 APK 文件）。
+  const removeApkHistoryItem = (path: string) => {
+    setApkHistory((prev) => removeApkHistory(prev, path));
+  };
+  // 一键清理所有失效项（源文件已不在 PC 上的历史）。
+  // 前提：apkHistoryExisting 已由校验 effect 填好——入口仅在 apkHistoryMissingCount>0（同样基于该集合）时显示，
+  // 故校验未回来时用户点不到，不会因 existing 尚空而误删有效项。若新增独立调用点须自行确保此前提。
+  const clearMissingApkHistory = () => {
+    setApkHistory((prev) => pruneMissingApkHistory(prev, apkHistoryExisting));
+  };
+  // 历史里源文件已失效的条数（驱动「清理失效项」入口的显隐与计数）。
+  const apkHistoryMissingCount = apkHistory.reduce((n, h) => (apkHistoryExisting.has(h.path) ? n : n + 1), 0);
+  // 历史项 hover tooltip：只列安装记录（设备 SN · 次数 · 时间，多行）。换行靠 \n（GlobalTooltip white-space:pre-line）。
+  const buildApkHistoryTip = (h: ApkHistoryItem): string => {
+    if (h.devices.length === 0) return `安装记录：装过 ${h.installCount} 次（早期记录无设备信息）`;
+    const lines: string[] = ['安装记录：'];
+    for (const d of h.devices) {
+      const times = d.count > 1 ? ` ×${d.count}` : '';
+      lines.push(`· ${d.label}${times} · ${formatHistoryTime(d.at)}`);
+    }
+    return lines.join('\n');
+  };
+
   const toggleInstallTarget = (deviceId: string) => {
     if (isUnifiedInstalling) return;
     setInstallTargets((prev) => {
@@ -1790,10 +1843,9 @@ function SimpleApp() {
   };
 
   const installItemsOnDevice = async (deviceId: string, items: ApkInstallQueueItem[]) => {
-    const deviceLabel = (() => {
-      const d = devices.find((x) => x.id === deviceId);
-      return d ? getDeviceLabel(d) : deviceId;
-    })();
+    const targetDevice = devices.find((x) => x.id === deviceId);
+    const deviceLabel = targetDevice ? getDeviceLabel(targetDevice) : deviceId; // 安装日志用友好显示名
+    const deviceSn = targetDevice?.serialNo || deviceLabel; // 安装历史记录用 SN 表示设备；无 SN 回退显示名
     const installFlags = installAllowDowngrade ? '-r -d' : '-r';
     // 安装前快照本设备的包集合，用于装完后 diff 出新增的包标「NEW」（每台设备各自算，与当前选中无关）。
     const beforeRes = await window.electronAPI!.listInstalledPackages(deviceId).catch(() => null);
@@ -1839,6 +1891,8 @@ function SimpleApp() {
           }));
           if (result.success) {
             const out = (result.data?.output || '').trim();
+            // 装成功才记入安装历史（按 path 去重；按设备 id 合并记录，供 tooltip 展示设备 SN + 各自时间）。
+            setApkHistory((prev) => upsertApkHistory(prev, { path: item.path, fileName: item.fileName, deviceId, deviceLabel: deviceSn }, Date.now()));
             appendInstallLog(
               `${deviceLabel} ✓ ${item.fileName} 安装成功 · 耗时 ${elapsed}s` + (out ? `\n${indent(out)}` : ''),
               'success'
@@ -2594,27 +2648,32 @@ function SimpleApp() {
           </div>
         </div>
 
-        {/* 操作区（占比 3）：选 APK + 目标设备 + 安装按钮 */}
-        <div style={{ flex: 3, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
-        {/* 拖放区：无文件时图标提示，有文件时放 chip */}
+        {/* 操作区（占比 5，与安装详情 1:1）：选 APK + 目标设备 + 安装按钮 */}
+        <div style={{ flex: 5, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px', overflowY: 'auto' }}>
+        {/* 操作区行：左列（拖放区在上、目标设备在下）+ 右侧可折叠安装历史侧栏 */}
+        <div style={{ display: 'flex', gap: '10px', flex: 1, minHeight: 0 }}>
+        {/* 左列：拖放区（缩小）+ 目标设备（占满剩余、可滚动） */}
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {/* 拖放区（缩小，不占满）：无文件时图标提示，有文件时放 chip */}
         <div
           ref={apkDropZoneRef}
           onClick={() => { if (!isUnifiedInstalling) selectApkFiles(); }}
           style={{
-            flex: 1,
-            minHeight: '90px',
+            flexShrink: 0,
+            maxHeight: '150px',
+            overflowY: 'auto',
             display: 'flex',
             flexDirection: 'column',
             border: `1.5px dashed ${isApkDragOver ? 'var(--accent)' : 'var(--border-strong)'}`,
             backgroundColor: isApkDragOver ? 'var(--accent-soft)' : 'var(--bg-elevated)',
             borderRadius: 'var(--r-md)',
-            padding: pendingApks.length > 0 ? '12px 14px' : '24px 18px',
+            padding: pendingApks.length > 0 ? '10px 12px' : '16px 14px',
             cursor: isUnifiedInstalling ? 'not-allowed' : 'pointer',
             transition: 'background-color 120ms ease, border-color 120ms ease',
           }}
         >
           {pendingApks.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0, overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', minHeight: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <span style={{ fontSize: '12px', color: 'var(--fg-secondary)' }}>{`已选 ${pendingApks.length} 个安装包`}</span>
                 <span style={{ fontSize: '12px', color: 'var(--accent)' }}>{'＋ 点击或拖拽继续添加'}</span>
@@ -2629,20 +2688,20 @@ function SimpleApp() {
               </div>
             </div>
           ) : (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', pointerEvents: 'none' }}>
-              <span style={{ width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-soft)', border: '1px solid var(--accent-soft-bd)', borderRadius: '12px' }}>
-                <Icon name="package-plus" size={24} color="var(--accent)" />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: '12px', pointerEvents: 'none' }}>
+              <span style={{ width: '34px', height: '34px', flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--accent-soft)', border: '1px solid var(--accent-soft-bd)', borderRadius: '10px' }}>
+                <Icon name="package-plus" size={20} color="var(--accent)" />
               </span>
-              <span style={{ fontSize: '14px', fontWeight: 500, color: isApkDragOver ? 'var(--accent)' : 'var(--fg-secondary)' }}>
-                {isApkDragOver ? '松开以添加 APK' : '把 .apk 拖到这里，或点击选择'}
+              <span style={{ fontSize: '13px', fontWeight: 500, color: isApkDragOver ? 'var(--accent)' : 'var(--fg-secondary)' }}>
+                {isApkDragOver ? '松开以添加 APK' : '把 .apk 拖到这里，或点击选择（支持多选）'}
               </span>
-              <span style={{ fontSize: '12px', color: 'var(--fg-tertiary)' }}>{'支持多选'}</span>
             </div>
           )}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        {/* 目标设备（占满左列剩余高度，过多时滚动） */}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexShrink: 0 }}>
             <span className="seclabel" style={{ margin: 0 }}>目标设备</span>
             <span style={{ fontSize: '12px', color: 'var(--fg-tertiary)' }}>{selectedOnlineCount}/{onlineDevices.length}</span>
             <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -2650,20 +2709,23 @@ function SimpleApp() {
               <span className="link" onClick={() => { if (!isUnifiedInstalling) setInstallTargets(new Set()); }} style={{ fontSize: '12px', cursor: isUnifiedInstalling ? 'not-allowed' : 'pointer', opacity: isUnifiedInstalling ? 0.5 : 1, color: 'var(--fg-tertiary)' }}>全部取消</span>
             </span>
           </div>
-          {/* 目标设备：一行 3 个的紧凑网格（去掉占地方的设备 id，名字超长省略号），用 title 兜底看全名/IP。 */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '8px' }}>
+          {/* 目标设备：竖排单列列表（名字超长省略号），用 title 兜底看全名/IP；过多时整列滚动。 */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {devices.length === 0 ? (
-              <div style={{ gridColumn: '1 / -1', padding: '8px', color: 'var(--fg-tertiary)', fontSize: '13px' }}>暂无已连接设备</div>
+              <div style={{ padding: '8px', color: 'var(--fg-tertiary)', fontSize: '13px' }}>暂无已连接设备</div>
             ) : devices.map((d) => {
               const online = d.status === 'connected';
               const checked = installTargets.has(d.id);
               return (
-                <label key={d.id} data-tip={`${getDeviceLabel(d)} · ${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, padding: '7px 9px', backgroundColor: checked ? 'var(--accent-soft)' : 'var(--bg-elevated)', border: checked ? '1px solid var(--accent-soft-bd)' : '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', cursor: online && !isUnifiedInstalling ? 'pointer' : 'not-allowed', opacity: online ? 1 : 0.5 }}>
-                  <span style={{ width: '15px', height: '15px', flex: 'none', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: checked ? 'var(--accent)' : 'transparent', border: checked ? '1.5px solid var(--accent)' : '1.5px solid var(--border-strong)' }}>
-                    {checked && <Icon name="check" size={11} color="#fff" />}
+                <label key={d.id} data-tip={`${getDeviceLabel(d)} · ${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0, flexShrink: 0, padding: '10px 12px', backgroundColor: checked ? 'var(--accent-soft)' : 'var(--bg-elevated)', border: checked ? '1px solid var(--accent-soft-bd)' : '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', cursor: online && !isUnifiedInstalling ? 'pointer' : 'not-allowed', opacity: online ? 1 : 0.5, transition: 'background-color 120ms ease, border-color 120ms ease' }}>
+                  <span style={{ width: '16px', height: '16px', flex: 'none', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: checked ? 'var(--accent)' : 'transparent', border: checked ? '1.5px solid var(--accent)' : '1.5px solid var(--border-strong)' }}>
+                    {checked && <Icon name="check" size={12} color="#fff" />}
                   </span>
                   <input type="checkbox" checked={checked} disabled={!online || isUnifiedInstalling} onChange={() => toggleInstallTarget(d.id)} style={{ display: 'none' }} />
-                  <span style={{ fontSize: '12.5px', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{getDeviceLabel(d)}</span>
+                  <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    <span style={{ fontSize: '13px', color: 'var(--fg-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{getDeviceLabel(d)}</span>
+                    <span style={{ fontSize: '11px', color: 'var(--fg-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.serialNo ? `SN ${d.serialNo}` : d.id}</span>
+                  </div>
                   <Badge tone={d.connectionType === 'wifi' ? 'success' : 'info'} dot>{d.connectionType === 'wifi' ? 'WiFi' : 'USB'}</Badge>
                   {!online && <span style={{ flex: 'none', fontSize: '11px', color: 'var(--fg-tertiary)' }}>离线</span>}
                 </label>
@@ -2671,10 +2733,63 @@ function SimpleApp() {
             })}
           </div>
         </div>
+        </div>{/* /左列 */}
+
+        {/* 安装历史侧栏（右，常驻不折叠）：装成功的 APK 记这儿，重启仍在。点「加入」放回安装区再次安装；失效项置灰、可单删/一键清理。hover 看各设备安装记录。 */}
+        {apkHistory.length > 0 && (
+          <div style={{ flex: '0 0 280px', minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid var(--border-default)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-panel)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderBottom: '1px solid var(--border-default)' }}>
+              <Icon name="history" size={14} color="var(--fg-secondary)" />
+              <span className="seclabel" style={{ margin: 0 }}>安装历史</span>
+              <span style={{ fontSize: '12px', color: 'var(--fg-tertiary)' }}>{apkHistory.length}</span>
+              {apkHistoryMissingCount > 0 && (
+                <span className="link" onClick={clearMissingApkHistory} data-tip="移除所有源文件已不存在的历史项" style={{ marginLeft: 'auto', fontSize: '12px', cursor: 'pointer', color: 'var(--fg-tertiary)' }}>
+                  {`清理失效项 (${apkHistoryMissingCount})`}
+                </span>
+              )}
+            </div>
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px', overflowY: 'auto' }}>
+              {apkHistory.map((h) => {
+                const exists = apkHistoryExisting.has(h.path);
+                const added = pendingApks.some((a) => a.path === h.path); // 已在待安装区 → 加入按钮置灰
+                const canAdd = exists && !added && !isUnifiedInstalling;
+                return (
+                  <div
+                    key={h.path}
+                    data-tip={buildApkHistoryTip(h)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: 'var(--r-sm)', opacity: exists ? 1 : 0.5 }}
+                  >
+                    <Icon name="package" size={15} color="var(--fg-tertiary)" />
+                    <div style={{ minWidth: 0, flex: 1, display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: '12.5px', color: exists ? 'var(--fg-primary)' : 'var(--fg-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.fileName}</span>
+                      <span style={{ fontSize: '11px', color: 'var(--fg-tertiary)' }}>
+                        {exists
+                          ? `${h.devices.length > 0 ? `${h.devices.length} 台设备装过` : `装过 ${h.installCount} 次`} · ${formatHistoryTime(h.lastInstalledAt)}`
+                          : '文件已不存在，不可安装'}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => { if (canAdd) addApkFilesByPath([h.path]); }}
+                      disabled={!canAdd}
+                      data-tip={added ? '已在待安装区' : '加入待安装区'}
+                      style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 9px', fontSize: '12px', background: 'none', border: '1px solid var(--border-default)', borderRadius: 'var(--r-pill)', color: canAdd ? 'var(--accent)' : 'var(--fg-tertiary)', cursor: canAdd ? 'pointer' : 'not-allowed' }}
+                    >
+                      <Icon name={added ? 'check' : 'plus'} size={12} />{added ? '已加入' : '加入'}
+                    </button>
+                    <button onClick={() => removeApkHistoryItem(h.path)} data-tip="从历史移除" style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--fg-tertiary)', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center' }}>
+                      <Icon name="x" size={13} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        </div>{/* /操作区行 */}
         </div>
 
-        {/* 安装详情（占比 7）：进度 + 错误 + 安装日志 */}
-        <div style={{ flex: 7, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
+        {/* 安装详情（占比 5，与操作区 1:1）：进度 + 错误 + 安装日志 */}
+        <div style={{ flex: 5, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
             <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--fg-primary)' }}>{'安装详情'}</span>
             {installLog.length > 0 && (
