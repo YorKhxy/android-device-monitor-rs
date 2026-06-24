@@ -80,11 +80,18 @@ pub async fn discover(adb: &Path) -> Result<Vec<MdnsService>, AdbError> {
     Ok(parse_mdns_services(&out.stdout))
 }
 
-/// 多拍扫描合并：mDNS 是**周期性广播 + 守护进程缓存快照**，单次 `adb mdns services` 只拿到这一瞬刚广播过的子集；
-/// 刚重启 adb server（如 app 重新构建/启动）缓存还是冷的，头几次可能为空 →「原本能扫的都没了」。
-/// 故连扫 `passes` 拍、每拍间隔 `gap_ms`，按 (服务类型, target) 跨拍并集去重，显著提命中率。
+/// 流式多拍发现：mDNS 是**周期性广播 + 守护进程缓存快照**，单次 `adb mdns services` 只拿到这一瞬刚广播过的
+/// 子集；刚重启 adb server（app 重新构建/启动）缓存还是冷的，头几次可能为空。故连扫 `passes` 拍、每拍间隔
+/// `gap_ms`，按 (服务类型, target) 跨拍并集去重，显著提命中率。**每拍扫描后**把当前累计的「可连接设备」交给
+/// `on_pass` 回调——用于即时 emit 给前端，第一拍(~百毫秒)就先显示，后续拍补齐，免去干等全程。
 /// best-effort：单拍失败不中断；仅当全部失败且无任何结果时才返回最后一次错误。
-pub async fn discover_merged(adb: &Path, passes: u8, gap_ms: u64) -> Result<Vec<MdnsService>, AdbError> {
+/// 返回最终累计的全部服务（未经 connectable 处理，去重交调用方）。
+pub async fn discover_streaming(
+    adb: &Path,
+    passes: u8,
+    gap_ms: u64,
+    mut on_pass: impl FnMut(Vec<MdnsService>),
+) -> Result<Vec<MdnsService>, AdbError> {
     let passes = passes.max(1);
     let mut seen: HashSet<String> = HashSet::new();
     let mut merged: Vec<MdnsService> = Vec::new();
@@ -103,6 +110,7 @@ pub async fn discover_merged(adb: &Path, passes: u8, gap_ms: u64) -> Result<Vec<
             }
             Err(e) => last_err = Some(e),
         }
+        on_pass(connectable(merged.clone())); // 每拍把累计可连接设备推出去（先出先显）
     }
     if merged.is_empty() {
         if let Some(e) = last_err {

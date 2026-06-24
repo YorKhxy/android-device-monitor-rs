@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use super::error::classify_adb_error;
 use super::{binary, manager};
@@ -71,11 +71,19 @@ pub async fn pair_wifi(app: AppHandle, target: String, pairing_code: String) -> 
 pub async fn discover_mdns_devices(app: AppHandle) -> Value {
     match binary::resolve_adb_path(&app) {
         None => adb_not_found(),
-        // 多拍扫描(3 拍 × 间隔 800ms)合并：覆盖 mDNS 周期广播/冷缓存导致的单次快照漏扫。
-        Some(adb) => match super::mdns::discover_merged(&adb, 3, 800).await {
-            Ok(svcs) => json!({ "success": true, "data": super::mdns::connectable(svcs) }),
-            Err(e) => e.to_result(),
-        },
+        // 流式多拍扫描(3 拍 × 间隔 700ms)：覆盖 mDNS 周期广播/冷缓存导致的单次快照漏扫，
+        // 但每拍即把累计结果 emit("mdns_discovered") 给前端——第一拍 ~百毫秒就先显示，无需干等全程。
+        Some(adb) => {
+            let app2 = app.clone();
+            let result = super::mdns::discover_streaming(&adb, 3, 700, move |snapshot| {
+                let _ = app2.emit("mdns_discovered", &snapshot);
+            })
+            .await;
+            match result {
+                Ok(svcs) => json!({ "success": true, "data": super::mdns::connectable(svcs) }),
+                Err(e) => e.to_result(),
+            }
+        }
     }
 }
 

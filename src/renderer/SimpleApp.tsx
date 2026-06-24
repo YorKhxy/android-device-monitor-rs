@@ -351,7 +351,10 @@ function SimpleApp() {
   // 局域网 mDNS 自动发现的设备（Pico 等无线设备，点一下直连，免输 IP）。
   const [mdnsDevices, setMdnsDevices] = useState<MdnsDevice[]>([]);
   const [mdnsScanned, setMdnsScanned] = useState(false); // 是否扫过一次（控制空态文案：未扫 vs 扫过无果）
-  const mdnsScanCooldown = useCooldown(); // 扫描按钮点击特效：与「刷新设备」同款（假冷却转圈 + 禁用）
+  // 扫描约 1.6s（3 拍 × 700ms + adb 调用），冷却拉长到 1.8s 覆盖整个扫描周期——避免扫描没跑完就被再次点击，
+  // 否则两次扫描的流式 emit 会互相覆盖（旧扫描尾拍盖掉新结果）。配合 mdnsScanningRef 重入守卫双保险。
+  const mdnsScanCooldown = useCooldown(1800);
+  const mdnsScanningRef = useRef(false); // 扫描进行中标记：拦掉重入，杜绝两次扫描事件交叠
   // 历史 WiFi 设备（快速重连）。初始从 localStorage 读取，已按最近连接时间倒序。
   const [historyDevices, setHistoryDevices] = useState<HistoryDevice[]>(() => loadHistoryDevices());
   // 正在快速连接的历史卡片 serialNo（连接中按钮禁用 + 即时反馈）。
@@ -1214,12 +1217,24 @@ function SimpleApp() {
   // \u5c40\u57df\u7f51 mDNS \u81ea\u52a8\u53d1\u73b0\uff1a\u8dd1 adb mdns services\uff0c\u5217\u51fa\u9644\u8fd1\u65e0\u7ebf\u8bbe\u5907\uff08\u70b9\u4e00\u4e0b\u76f4\u8fde\uff09\u3002
   const refreshMdns = useCallback(async () => {
     if (!hasElectronAPI()) return;
+    if (mdnsScanningRef.current) return; // 上一次扫描还没结束：忽略重入，避免两次扫描的流式 emit 互相覆盖
+    mdnsScanningRef.current = true;
     try {
       const res = await window.electronAPI!.discoverMdnsDevices();
       setMdnsDevices(res.success && Array.isArray(res.data) ? res.data : []);
     } finally {
       setMdnsScanned(true);
+      mdnsScanningRef.current = false;
     }
+  }, []);
+
+  // mDNS 流式发现：扫描时后端每拍把累计可连接设备 emit 过来，逐拍刷新列表（第一拍 ~百毫秒就先显示，不用干等全程）。
+  useEffect(() => {
+    if (!hasElectronAPI() || !window.electronAPI?.onMdnsDiscovered) return;
+    const off = window.electronAPI.onMdnsDiscovered((list) => {
+      setMdnsDevices(Array.isArray(list) ? list : []);
+    });
+    return off;
   }, []);
 
   // \u70b9\u53d1\u73b0\u7684\u8bbe\u5907\u76f4\u8fde\uff08\u590d\u7528 performWifiConnect\uff1a\u6210\u529f\u843d\u5386\u53f2\uff1b\u8fde\u4e0a\u540e\u8be5\u8bbe\u5907\u4f1a\u88ab\u300c\u6392\u9664\u5df2\u8fde\u63a5\u300d\u8fc7\u6ee4\u6389\uff0c\u4e0d\u518d\u663e\u793a\uff09\u3002

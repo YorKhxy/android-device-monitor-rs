@@ -45,6 +45,7 @@ const api: ElectronAPI = {
   getDevices: () => call('get_devices'),
   connectWiFi: (ip) => call('connect_wifi', { ip }),
   discoverMdnsDevices: () => call('discover_mdns_devices'),
+  onMdnsDiscovered: (cb) => sub('mdns_discovered', cb),
   pairWiFi: (target, pairingCode) => call('pair_wifi', { target, pairingCode }),
   disconnect: (deviceId) => call('disconnect', { deviceId }),
   connectUSB: () => call('connect_usb'),
