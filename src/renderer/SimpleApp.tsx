@@ -2735,9 +2735,8 @@ function SimpleApp() {
         </div>
         </div>{/* /左列 */}
 
-        {/* 安装历史侧栏（右，常驻不折叠）：装成功的 APK 记这儿，重启仍在。点「加入」放回安装区再次安装；失效项置灰、可单删/一键清理。hover 看各设备安装记录。 */}
-        {apkHistory.length > 0 && (
-          <div style={{ flex: '0 0 280px', minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid var(--border-default)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-panel)', overflow: 'hidden' }}>
+        {/* 安装历史侧栏（右，常驻不折叠，空也显示）：装成功的 APK 记这儿，重启仍在。点「加入」放回安装区再次安装；失效项置灰、可单删/一键清理。hover 看各设备安装记录。 */}
+        <div style={{ flex: '0 0 280px', minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid var(--border-default)', borderRadius: 'var(--r-md)', backgroundColor: 'var(--bg-panel)', overflow: 'hidden' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', borderBottom: '1px solid var(--border-default)' }}>
               <Icon name="history" size={14} color="var(--fg-secondary)" />
               <span className="seclabel" style={{ margin: 0 }}>安装历史</span>
@@ -2749,6 +2748,13 @@ function SimpleApp() {
               )}
             </div>
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px', overflowY: 'auto' }}>
+              {apkHistory.length === 0 && (
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', textAlign: 'center', color: 'var(--fg-tertiary)', padding: '12px' }}>
+                  <Icon name="history" size={22} color="var(--fg-tertiary)" />
+                  <span style={{ fontSize: '12.5px' }}>暂无安装历史</span>
+                  <span style={{ fontSize: '11px' }}>安装成功的 APK 会记在这里</span>
+                </div>
+              )}
               {apkHistory.map((h) => {
                 const exists = apkHistoryExisting.has(h.path);
                 const added = pendingApks.some((a) => a.path === h.path); // 已在待安装区 → 加入按钮置灰
@@ -2784,7 +2790,6 @@ function SimpleApp() {
               })}
             </div>
           </div>
-        )}
         </div>{/* /操作区行 */}
         </div>
 
