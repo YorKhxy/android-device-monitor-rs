@@ -15,7 +15,6 @@ export interface ApkInstallRecord {
 export interface ApkHistoryItem {
   path: string; // APK 在 PC 上的绝对路径，唯一标识 / 去重键
   fileName: string; // 文件名（列表主显示）
-  packageName?: string; // 最近一次成功安装后识别到的应用包名
   lastInstalledAt: number; // 最近一次（任意设备）安装成功的时间戳，列表倒序排序用
   installCount: number; // 累计成功安装次数（所有设备合计）
   devices: ApkInstallRecord[]; // 各设备的安装记录，按 at 倒序
@@ -60,7 +59,6 @@ export const loadApkHistory = (): ApkHistoryItem[] => {
         return {
           path: r.path as string,
           fileName: r.fileName as string,
-          packageName: typeof r.packageName === 'string' && r.packageName.length > 0 ? r.packageName : undefined,
           lastInstalledAt: typeof r.lastInstalledAt === 'number' ? r.lastInstalledAt : 0,
           installCount: typeof r.installCount === 'number' && r.installCount > 0 ? r.installCount : 1,
           devices: normalizeDevices(r.devices), // 旧数据无 devices 字段 → 空数组（tooltip 回退「无设备记录」）
@@ -85,7 +83,7 @@ export const saveApkHistory = (list: ApkHistoryItem[]) => {
 // 记一次「某台设备安装成功」：按 path 去重——已存在则更新总时间/总次数、并按 deviceId 合并该设备记录；不存在则新增。置顶。返回新列表。
 export const upsertApkHistory = (
   list: ApkHistoryItem[],
-  entry: { path: string; fileName: string; deviceId: string; deviceLabel: string; packageName?: string },
+  entry: { path: string; fileName: string; deviceId: string; deviceLabel: string },
   now: number,
 ): ApkHistoryItem[] => {
   const existing = list.find((x) => x.path === entry.path);
@@ -100,7 +98,6 @@ export const upsertApkHistory = (
   const merged: ApkHistoryItem = {
     path: entry.path,
     fileName: entry.fileName,
-    packageName: entry.packageName || existing?.packageName,
     lastInstalledAt: now,
     installCount: (existing?.installCount ?? 0) + 1,
     devices,
