@@ -1827,10 +1827,10 @@ function SimpleApp() {
   };
   // 历史里源文件已失效的条数（驱动「清理失效项」入口的显隐与计数）。
   const apkHistoryMissingCount = apkHistory.reduce((n, h) => (apkHistoryExisting.has(h.path) ? n : n + 1), 0);
-  // 历史项 hover tooltip：只列安装记录（设备 SN · 次数 · 时间，多行）。换行靠 \n（GlobalTooltip white-space:pre-line）。
+  // 历史项 hover tooltip：包名置顶，下面列安装记录（设备 SN · 次数 · 时间，多行）。换行靠 \n（GlobalTooltip white-space:pre-line）。
   const buildApkHistoryTip = (h: ApkHistoryItem): string => {
-    if (h.devices.length === 0) return `安装记录：装过 ${h.installCount} 次（早期记录无设备信息）`;
-    const lines: string[] = ['安装记录：'];
+    if (h.devices.length === 0) return `${h.packageName ? `${h.packageName}\n` : ''}安装记录：装过 ${h.installCount} 次（早期记录无设备信息）`;
+    const lines: string[] = h.packageName ? [h.packageName, '安装记录：'] : ['安装记录：'];
     for (const d of h.devices) {
       const times = d.count > 1 ? ` ×${d.count}` : '';
       lines.push(`· ${d.label}${times} · ${formatHistoryTime(d.at)}`);
@@ -1865,6 +1865,7 @@ function SimpleApp() {
     // 安装前快照本设备的包集合，用于装完后 diff 出新增的包标「NEW」（每台设备各自算，与当前选中无关）。
     const beforeRes = await window.electronAPI!.listInstalledPackages(deviceId).catch(() => null);
     const baseline = new Set(beforeRes && beforeRes.success && beforeRes.data ? beforeRes.data : []);
+    let knownPackages = new Set(baseline);
     for (const item of items) {
       const startedAt = Date.now();
       // 唯一 id：既是进度通道（多设备并行各自回填进度条），也是「中断」按钮的取消通道。
@@ -1906,8 +1907,12 @@ function SimpleApp() {
           }));
           if (result.success) {
             const out = (result.data?.output || '').trim();
+            const currentRes = await window.electronAPI!.listInstalledPackages(deviceId).catch(() => null);
+            const currentPackages = currentRes && currentRes.success && currentRes.data ? currentRes.data : undefined;
+            const installedPackageName = currentPackages?.find((p) => !knownPackages.has(p));
+            if (currentPackages) knownPackages = new Set(currentPackages);
             // 装成功才记入安装历史（按 path 去重；按设备 id 合并记录，供 tooltip 展示设备 SN + 各自时间）。
-            setApkHistory((prev) => upsertApkHistory(prev, { path: item.path, fileName: item.fileName, deviceId, deviceLabel: deviceSn }, Date.now()));
+            setApkHistory((prev) => upsertApkHistory(prev, { path: item.path, fileName: item.fileName, deviceId, deviceLabel: deviceSn, packageName: installedPackageName }, Date.now()));
             appendInstallLog(
               `${deviceLabel} ✓ ${item.fileName} 安装成功 · 耗时 ${elapsed}s` + (out ? `\n${indent(out)}` : ''),
               'success'
@@ -4401,4 +4406,3 @@ function SimpleApp() {
 }
 
 export default SimpleApp;
-
