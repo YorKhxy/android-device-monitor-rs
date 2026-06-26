@@ -134,7 +134,7 @@ android-device-monitor-rs/
 - **T2.3 性能指标采样**：`adb/runtime_inspector.rs` 对应原 `runtimeInspector.ts`——进程列表、Activity 栈、CPU（`top`）、内存（`dumpsys meminfo`）、FPS（`dumpsys gfxinfo` 等）。**FPS 字段统一口径：`sample.metrics.fps` 同时含 Android 与 Pico 帧率，不按 provider 分流**（把 Pico native fps 写进同一字段）。
 - **T2.4 Pico 官方指标**：`adb/pico_metrics.rs` + `pico_metrics_stream.rs` 对应原文件，解析 XR Profiling Toolkit 的 `FPS/MTP/FrmCpu/FrmGpu/ATWGPU/GPU`，仅对已集成的 Pico 应用提供。
 - **T2.5 持续录制 + 分段缝合**：`adb/capture_recorder.rs` 对应原 `captureRecorder.ts`/`PerformanceRecordingManager`——设备端 `screenrecord` 录制，单段 ≤180s 自动分段、实时 pull 落盘（运行时根目录，**非 userData**），多段在回看时缝合为连续时间轴；Pico 走录制 provider 分流。软上限提醒（默认 30 分钟或 2GB）。
-- **T2.6 采集会话存储**：`performance/capture_store.rs` + `capture_controller.rs` 对应原 `performanceCaptureStore.ts`/`performanceCaptureController.ts`——采集开始即同时启动采样与录制；样本与分段实时落盘（中途崩溃已落盘部分可加载）；每次采集存为一条记录（设备 SN + 时间 + 时长 + 可自定义命名）。
+- **T2.6 采集会话存储**：`performance/capture_store.rs` + `capture_controller.rs` 对应原 `performanceCaptureStore.ts`/`performanceCaptureController.ts`——采集开始即同时启动采样与录制；样本与分段实时落盘（中途崩溃已落盘部分可加载）；每次采集存为一条记录（设备 SN + 时间 + 时长 + 可自定义命名）。会话目录名前缀必须优先使用设备真实 SN（`ro.serialno` / `ro.boot.serialno`），WiFi 设备不得使用 `ip:port`，SN 取不到才回退设备 id。
 - **T2.7 采集回看 + 媒体协议**：`performance/media.rs` 对应原 `performanceMedia.ts`——自定义协议把 `performance-recordings/...` 相对路径映射到磁盘文件供前端播放（Tauri 用 `asset:` 协议或自定义 protocol；UI 不暴露宿主绝对路径）。回看加载曲线+视频、删除（二次确认连数据带视频）、视频快捷截图归档到该次采集截图子目录。
 - **T2.8 会话导出**：`performance/session_export.rs` 对应原 `performanceSessionExport.ts`，用 **rust_xlsxwriter** 导出 xlsx 工作簿（统一取 `metrics.fps`）。
 - **T2.9 时间轴联动 + 过滤打标记（后端数据支撑）**：报告曲线多选/隔离逻辑前端已有；后端提供采样数据与按指标阈值（`>`/`=`/`<`，多条件、各自按指标标记不做 AND 交集）所需数据接口。
@@ -164,7 +164,7 @@ android-device-monitor-rs/
 - CPU/内存/FPS/GPU 实时曲线刷新；Pico 应用显示官方指标。
 - 持续采集：开始即录制、曲线刷新、停止后报告内可播放；分段缝合为连续时间轴对用户透明；中途强杀后已落盘部分可加载。
 - 时间轴拖动曲线游标与视频同步；过滤打标记按指标着色/显隐、单击标记跳转并暂停。
-- 回看列表加载/删除/命名、视频快捷截图、xlsx 导出均正确。
+- 回看列表加载/删除/命名、视频快捷截图、xlsx 导出均正确；采集会话目录与导出 zip 默认文件名均优先使用设备真实 SN，不使用 WiFi `ip:port`。
 - 对拍：同一设备同一采集，曲线数值、视频时长、导出内容与原版一致。
 - **（T2.10）**「录制设备声音」开关默认关；开启且设备支持（A13+）时采集录像含音轨，回看可听到设备声音且设备同时出声不静音；Android<13/不支持设备开关置灰、录制走无声路径不报错；`audioRecorded` 字段正确落 manifest 并驱动回看音量控件；含音分段接缝处音频无明显异常（真机验收）。Pico 真机验证含音录制可用。
 

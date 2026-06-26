@@ -1,7 +1,7 @@
 //! adb 执行核心与设备操作（对应原 ADBManager.ts 的设备相关方法）。
 //! 命令执行走 tokio::process + 超时；解析逻辑对齐原版。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -183,6 +183,15 @@ async fn get_device_properties(
     Ok(parse_getprop(&out.stdout))
 }
 
+pub(crate) async fn get_device_serial_no(adb: &Path, device_id: &str) -> Option<String> {
+    let props = get_device_properties(adb, device_id).await.ok()?;
+    ["ro.serialno", "ro.boot.serialno"]
+        .iter()
+        .filter_map(|key| props.get(*key))
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty() && !s.eq_ignore_ascii_case("unknown"))
+}
+
 pub(crate) async fn get_battery_level(adb: &Path, device_id: &str) -> Option<i64> {
     let out = exec_adb(adb, &["-s", device_id, "shell", "dumpsys", "battery"], 3000)
         .await
@@ -236,62 +245,98 @@ async fn measure_wifi_latency(adb: &Path, device_id: &str) -> (Option<i64>, Opti
     }
 }
 
+fn apply_device_properties(
+    device: &mut DeviceInfo,
+    fallback_id: &str,
+    props: std::collections::HashMap<String, String>,
+) {
+    let get = |k: &str| props.get(k).cloned().filter(|s| !s.is_empty());
+    if let Some(v) = get("ro.product.name") {
+        device.name = v;
+    }
+    device.serial_no = get("ro.serialno")
+        .or_else(|| get("ro.boot.serialno"))
+        .unwrap_or_else(|| fallback_id.to_string());
+    if let Some(v) = get("ro.product.model") {
+        device.model = v;
+    }
+    if let Some(v) = get("ro.product.manufacturer") {
+        device.manufacturer = v;
+    }
+    if let Some(v) = get("ro.build.version.release") {
+        device.android_version = v;
+    }
+    if let Some(v) = get("ro.build.version.sdk") {
+        device.api_level = v.parse().unwrap_or(0);
+    }
+}
+
+async fn build_device_info(adb: PathBuf, summary: DeviceSummary) -> DeviceInfo {
+    let mut device = DeviceInfo {
+        id: summary.id.clone(),
+        name: "Unknown".into(),
+        serial_no: "Unknown".into(),
+        model: "Unknown".into(),
+        manufacturer: "Unknown".into(),
+        android_version: "Unknown".into(),
+        api_level: 0,
+        connection_type: summary.connection_type.clone(),
+        status: summary.status.clone(),
+        battery_level: None,
+        screen_state: None,
+        latency_ms: None,
+        latency_status: None,
+    };
+
+    if summary.status == "connected" {
+        let props = get_device_properties(&adb, &summary.id);
+        let battery = get_battery_level(&adb, &summary.id);
+        let screen = get_screen_state(&adb, &summary.id);
+        if summary.connection_type == "wifi" {
+            let (props, battery, screen, (latency_ms, latency_status)) = tokio::join!(
+                props,
+                battery,
+                screen,
+                measure_wifi_latency(&adb, &summary.id)
+            );
+            if let Ok(props) = props {
+                apply_device_properties(&mut device, &summary.id, props);
+            }
+            device.battery_level = battery;
+            device.screen_state = screen;
+            device.latency_ms = latency_ms;
+            device.latency_status = latency_status;
+        } else {
+            let (props, battery, screen) = tokio::join!(props, battery, screen);
+            if let Ok(props) = props {
+                apply_device_properties(&mut device, &summary.id, props);
+            }
+            device.battery_level = battery;
+            device.screen_state = screen;
+        }
+    }
+
+    device
+}
+
 /// 获取设备列表（对齐原 getDevices：devices -l → 逐设备 getprop + 电量 + 屏幕状态 + WiFi 延迟）。
 pub async fn get_devices(adb: &Path) -> Result<Vec<DeviceInfo>, AdbError> {
     let out = exec_adb(adb, &["devices", "-l"], 8000).await?;
     let summaries = parse_device_summaries(&out.stdout);
-    let mut devices = Vec::with_capacity(summaries.len());
-
-    for summary in summaries {
-        let mut device = DeviceInfo {
-            id: summary.id.clone(),
-            name: "Unknown".into(),
-            serial_no: "Unknown".into(),
-            model: "Unknown".into(),
-            manufacturer: "Unknown".into(),
-            android_version: "Unknown".into(),
-            api_level: 0,
-            connection_type: summary.connection_type.clone(),
-            status: summary.status.clone(),
-            battery_level: None,
-            screen_state: None,
-            latency_ms: None,
-            latency_status: None,
-        };
-
-        if summary.status == "connected" {
-            if let Ok(props) = get_device_properties(adb, &summary.id).await {
-                let get = |k: &str| props.get(k).cloned().filter(|s| !s.is_empty());
-                if let Some(v) = get("ro.product.name") {
-                    device.name = v;
-                }
-                device.serial_no = get("ro.serialno")
-                    .or_else(|| get("ro.boot.serialno"))
-                    .unwrap_or_else(|| summary.id.clone());
-                if let Some(v) = get("ro.product.model") {
-                    device.model = v;
-                }
-                if let Some(v) = get("ro.product.manufacturer") {
-                    device.manufacturer = v;
-                }
-                if let Some(v) = get("ro.build.version.release") {
-                    device.android_version = v;
-                }
-                if let Some(v) = get("ro.build.version.sdk") {
-                    device.api_level = v.parse().unwrap_or(0);
-                }
-            }
-            device.battery_level = get_battery_level(adb, &summary.id).await;
-            device.screen_state = get_screen_state(adb, &summary.id).await;
-            if device.connection_type == "wifi" {
-                let (ms, st) = measure_wifi_latency(adb, &summary.id).await;
-                device.latency_ms = ms;
-                device.latency_status = st;
-            }
-        }
-
-        devices.push(device);
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, summary) in summaries.into_iter().enumerate() {
+        let adb = adb.to_path_buf();
+        tasks.spawn(async move { (index, build_device_info(adb, summary).await) });
     }
+
+    let mut indexed_devices = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        if let Ok(item) = result {
+            indexed_devices.push(item);
+        }
+    }
+    indexed_devices.sort_by_key(|(index, _)| *index);
+    let devices = indexed_devices.into_iter().map(|(_, device)| device).collect();
 
     Ok(devices)
 }

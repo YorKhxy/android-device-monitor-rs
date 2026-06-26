@@ -95,7 +95,13 @@ pub async fn export_capture_session(app: AppHandle, session_id: String) -> Value
         Ok(d) => d,
         Err(e) => return e.to_result(),
     };
-    let path = match save_dialog(&app, "导出采集会话", &format!("{session_id}.zip"), "采集会话压缩包", &["zip"]).await {
+    let default_session_id = capture_store::get_session(&session_id)
+        .await
+        .ok()
+        .map(|session| session.id)
+        .filter(|id| !id.is_empty() && !id.contains('/') && !id.contains('\\'))
+        .unwrap_or_else(|| session_id.clone());
+    let path = match save_dialog(&app, "导出采集会话", &format!("{default_session_id}.zip"), "采集会话压缩包", &["zip"]).await {
         Some(p) => p,
         None => return json!({ "success": true, "data": null }),
     };

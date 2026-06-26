@@ -18,7 +18,7 @@ use crate::adb::binary::resolve_adb_path;
 use crate::adb::capture_recorder::{self, RecordBackend, StartCaptureInput};
 use crate::adb::capture_segment::RecorderEvent;
 use crate::adb::error::{classify_adb_error, AdbError};
-use crate::adb::manager::exec_adb;
+use crate::adb::manager::{exec_adb, get_device_serial_no};
 use crate::adb::scrcpy;
 use crate::adb::{performance_dispatch, pico_metrics, runtime_inspector};
 
@@ -166,10 +166,13 @@ pub async fn start(app: &AppHandle, device_id: &str, record_audio: bool, bit_rat
     } else {
         "android-screenrecord"
     };
+    let device_sn = get_device_serial_no(&adb, device_id)
+        .await
+        .unwrap_or_else(|| device_id.to_string());
 
     let session = capture_store::create_session(CreateSessionInput {
         device_id: device_id.to_string(),
-        device_sn: device_id.to_string(),
+        device_sn,
         provider: provider.to_string(),
         // Pico screenrecord 录的是双眼原图，单眼靠播放时裁切——录制端从不产出单眼文件，恒 false。
         single_eye_video: Some(false),

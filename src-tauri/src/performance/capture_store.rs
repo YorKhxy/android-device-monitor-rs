@@ -65,6 +65,15 @@ fn sanitize(value: &str) -> String {
     if t.is_empty() { "device".to_string() } else { t.to_string() }
 }
 
+fn build_session_id(device_id: &str, device_sn: &str, started_at: i64) -> String {
+    let name_source = if device_sn.trim().is_empty() {
+        device_id
+    } else {
+        device_sn
+    };
+    format!("{}-{started_at}", sanitize(name_source))
+}
+
 pub fn captures_root() -> PathBuf {
     resolve_runtime_app_root().join(CAPTURES_DIR)
 }
@@ -129,6 +138,10 @@ async fn read_manifest(session_id: &str) -> Result<CaptureSession, AdbError> {
     serde_json::from_str(&raw).map_err(|e| err("解析会话清单失败", "该会话数据可能已损坏。", e.to_string()))
 }
 
+pub async fn get_session(session_id: &str) -> Result<CaptureSession, AdbError> {
+    read_manifest(session_id).await
+}
+
 /// 串行化的 manifest 读-改-写。
 async fn mutate_manifest<F>(session_id: &str, update: F) -> Result<CaptureSession, AdbError>
 where
@@ -144,12 +157,7 @@ where
 /// 创建会话：建 video/data/screenshots 目录、写 manifest、预创建空 samples.jsonl（防崩溃 load 报错）。
 pub async fn create_session(input: CreateSessionInput) -> Result<CaptureSession, AdbError> {
     let started_at = now_ms();
-    let sn = if input.device_sn.trim().is_empty() {
-        &input.device_id
-    } else {
-        &input.device_sn
-    };
-    let id = format!("{}-{}", sanitize(sn), started_at);
+    let id = build_session_id(&input.device_id, &input.device_sn, started_at);
 
     for dir in [video_dir(&id)?, data_dir(&id)?, screenshot_dir(&id)?] {
         tokio::fs::create_dir_all(&dir)
@@ -328,5 +336,24 @@ async fn read_markers(session_id: &str) -> Vec<Value> {
     match serde_json::from_str::<Value>(&raw) {
         Ok(Value::Array(arr)) => arr,
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_id_prefers_device_sn_over_wifi_adb_id() {
+        let id = build_session_id("192.168.31.22:5555", "R5CT123ABC", 1_700_000_000_000);
+
+        assert_eq!(id, "R5CT123ABC-1700000000000");
+    }
+
+    #[test]
+    fn session_id_falls_back_to_sanitized_device_id_without_sn() {
+        let id = build_session_id("192.168.31.22:5555", " ", 1_700_000_000_000);
+
+        assert_eq!(id, "192.168.31.22_5555-1700000000000");
     }
 }

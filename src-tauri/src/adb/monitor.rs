@@ -15,6 +15,7 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_snapshot = String::new();
         loop {
+            sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
             if let Some(adb) = binary::resolve_adb_path(&app) {
                 if let Ok(devices) = manager::get_devices(&adb).await {
                     let snapshot = manager::devices_snapshot(&devices);
@@ -24,7 +25,6 @@ pub fn start(app: AppHandle) {
                     }
                 }
             }
-            sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
         }
     });
 }
