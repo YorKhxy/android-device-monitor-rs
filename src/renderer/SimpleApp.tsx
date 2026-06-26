@@ -95,6 +95,7 @@ type DeviceApkInstallState = {
 
 const DEVICE_NAME_STORAGE_KEY = 'android-device-monitor.custom-device-names';
 const LOG_COL_WIDTHS_KEY = 'android-device-monitor.log-col-widths';
+const OFFLINE_CAPTURE_PLAYBACK_SLOT = '__offline_capture_playback__';
 // 日志表前 5 列（时间/Level/PID/包名/标签）默认像素宽；第 6 列「消息」自适应不入此数组。
 const DEFAULT_LOG_COL_WIDTHS = [96, 64, 70, 130, 140];
 
@@ -1648,18 +1649,18 @@ function SimpleApp() {
 
   // —— Phase 14 采集回看：加载 / 改名 / 删除 / 截图归档 —— //（refreshCaptureSessions 在上方定义）
   const selectCaptureSession = async (sessionId: string) => {
-    if (!hasElectronAPI() || !selectedDevice) return;
-    const deviceId = selectedDevice.id;
+    if (!hasElectronAPI()) return;
+    const reportSlot = selectedDevice?.id || OFFLINE_CAPTURE_PLAYBACK_SLOT;
     // 护栏：采集进行中不切回看——实时采集优先占着报告区，加载了也看不到，且会在关闭采集时被新报告覆盖。
     // 直接拦截并提示，避免「点了没反应 + 列表高亮与报告区不一致 + 选择被悄悄丢弃」的困惑。
-    if (activeCaptureByDeviceId[deviceId]) {
+    if (selectedDevice && activeCaptureByDeviceId[selectedDevice.id]) {
       setSuccess('采集进行中，关闭采集后即可回看历史采集。');
       return;
     }
     const result = await window.electronAPI!.loadCaptureSession(sessionId);
     if (result.success && result.data) {
-      // 加载到「当前查看的设备」槽位：在哪台设备上点回看，就在那台的报告区展示。
-      setLoadedReportFor(deviceId, result.data);
+      // 有设备时加载到该设备槽位；无设备时加载到离线回放槽，回放不依赖真机连接。
+      setLoadedReportFor(reportSlot, result.data);
       setError('');
     } else {
       setError(result.error || '加载采集会话失败');
@@ -2598,6 +2599,7 @@ function SimpleApp() {
 
   const levelPriority: Record<LogEntry['level'], number> = { V: 0, D: 1, I: 2, W: 3, E: 4, F: 5 };
   const selectedDeviceId = selectedDevice?.id || '';
+  const capturePlaybackSlot = selectedDeviceId || OFFLINE_CAPTURE_PLAYBACK_SLOT;
   const currentLogState = selectedDeviceId ? getLogState(selectedDeviceId) : null;
   const isSelectedLogcatRunning = Boolean(selectedDeviceId && runningLogDeviceIds.has(selectedDeviceId));
   const isSelectedLogPaused = Boolean(selectedDeviceId && pausedLogDeviceIds.has(selectedDeviceId));
@@ -2605,8 +2607,8 @@ function SimpleApp() {
   const selectedPerformanceSamples = selectedDeviceId ? performanceSamplesByDeviceId[selectedDeviceId] || [] : [];
   const isSelectedCapturing = Boolean(selectedDeviceId && activeCaptureByDeviceId[selectedDeviceId]);
   const liveCaptureSession = selectedDeviceId ? activeCaptureByDeviceId[selectedDeviceId] || null : null;
-  // 报告区展示：采集中=活动会话+实时样本；否则=该设备自己已加载的回看/刚停止报告（按设备隔离）。
-  const selectedLoadedReport = selectedDeviceId ? loadedReportByDeviceId[selectedDeviceId] ?? null : null;
+  // 报告区展示：采集中=活动会话+实时样本；否则=该设备槽位或无设备离线槽位的回看报告。
+  const selectedLoadedReport = loadedReportByDeviceId[capturePlaybackSlot] ?? null;
   const shownCaptureSession = isSelectedCapturing ? liveCaptureSession : selectedLoadedReport?.session ?? null;
   const shownCaptureSamples = isSelectedCapturing ? selectedPerformanceSamples : selectedLoadedReport?.samples ?? [];
   const shownCaptureMarkers = isSelectedCapturing ? [] : selectedLoadedReport?.markers ?? [];
