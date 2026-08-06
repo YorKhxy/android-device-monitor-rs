@@ -10,10 +10,15 @@
 //!   studio-abcd            _adb-tls-pairing._tcp  192.168.1.20:38911   ← 配对中(扫码后冒出)
 
 use std::collections::HashSet;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
 use std::path::Path;
 use std::time::Duration;
 
 use serde::Serialize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 use super::error::AdbError;
 use super::manager::exec_adb;
@@ -37,6 +42,102 @@ pub struct MdnsService {
 }
 
 const PAIRING_TYPE: &str = "_adb-tls-pairing._tcp";
+const ACTIVE_SCAN_TYPE: &str = "_adb-active._tcp";
+const DEFAULT_ADB_PORT: u16 = 5555;
+const ACTIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(450);
+
+fn adb_connect_packet() -> Vec<u8> {
+    let payload = b"host::features=shell_v2,stat_v2;";
+    let command = u32::from_le_bytes(*b"CNXN");
+    let checksum = payload.iter().map(|byte| u32::from(*byte)).sum::<u32>();
+    let mut packet = Vec::with_capacity(24 + payload.len());
+    for value in [
+        command,
+        0x01000001,
+        1024 * 1024,
+        payload.len() as u32,
+        checksum,
+        command ^ u32::MAX,
+    ] {
+        packet.extend_from_slice(&value.to_le_bytes());
+    }
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn is_adb_reply(header: &[u8]) -> bool {
+    if header.len() < 24 || !matches!(&header[..4], b"CNXN" | b"AUTH") {
+        return false;
+    }
+    let command = u32::from_le_bytes(header[..4].try_into().unwrap());
+    let magic = u32::from_le_bytes(header[20..24].try_into().unwrap());
+    magic == command ^ u32::MAX
+}
+
+async fn probe_adb_endpoint(addr: SocketAddr) -> bool {
+    let probe = async {
+        let mut stream = TcpStream::connect(addr).await?;
+        stream.write_all(&adb_connect_packet()).await?;
+        let mut header = [0_u8; 24];
+        stream.read_exact(&mut header).await?;
+        Ok::<bool, std::io::Error>(is_adb_reply(&header))
+    };
+    matches!(timeout(ACTIVE_PROBE_TIMEOUT, probe).await, Ok(Ok(true)))
+}
+
+fn primary_private_ipv4() -> Option<Ipv4Addr> {
+    // UDP connect 只做路由选择，不会向目标发包；借此取得默认局域网出口地址，避免绑定具体网卡名。
+    let socket = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
+    let SocketAddr::V4(local) = socket.local_addr().ok()? else {
+        return None;
+    };
+    let ip = *local.ip();
+    ip.is_private().then_some(ip)
+}
+
+/// mDNS 只覆盖主动广播的设备。对本机所在 /24 网段补扫经典 ADB 端口 5555，并完成 ADB 协议握手，
+/// 只把确实返回 CNXN/AUTH 的端点纳入结果。扫描不调用 `adb connect`，不会改变当前连接状态。
+pub async fn discover_active_adb() -> Vec<MdnsService> {
+    let Some(local_ip) = primary_private_ipv4() else {
+        return Vec::new();
+    };
+    let octets = local_ip.octets();
+    let mut tasks = JoinSet::new();
+    for host in 1_u8..=254 {
+        if host == octets[3] {
+            continue;
+        }
+        let ip = Ipv4Addr::new(octets[0], octets[1], octets[2], host);
+        let addr = SocketAddr::V4(SocketAddrV4::new(ip, DEFAULT_ADB_PORT));
+        tasks.spawn(async move { (ip, probe_adb_endpoint(addr).await) });
+    }
+
+    let mut found = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        let Ok((ip, true)) = result else {
+            continue;
+        };
+        let host = ip.to_string();
+        found.push(MdnsService {
+            name: format!("adb-{host}"),
+            serial: None,
+            service_type: ACTIVE_SCAN_TYPE.to_string(),
+            host: host.clone(),
+            port: DEFAULT_ADB_PORT,
+            target: format!("{host}:{DEFAULT_ADB_PORT}"),
+            pairing: false,
+        });
+    }
+    found.sort_by_key(|service| {
+        service
+            .host
+            .parse::<Ipv4Addr>()
+            .map(u32::from)
+            .unwrap_or(u32::MAX)
+    });
+    found
+}
 
 /// 解析 `adb mdns services` 输出（纯函数，便于测试）。跳过表头与脏行。
 pub fn parse_mdns_services(stdout: &str) -> Vec<MdnsService> {
@@ -149,6 +250,21 @@ pub fn connectable(services: Vec<MdnsService>) -> Vec<MdnsService> {
     out
 }
 
+/// 合并 mDNS 与主动补扫结果。相同 IP 优先保留 mDNS 条目，因为它携带设备广播的序列号和实际端口；
+/// 主动补扫只补 mDNS 完全缺失的经典 5555 端点。
+pub fn merge_discoveries(
+    mdns_services: Vec<MdnsService>,
+    active_services: Vec<MdnsService>,
+) -> Vec<MdnsService> {
+    let mut merged = connectable(mdns_services);
+    for service in active_services {
+        if !merged.iter().any(|existing| existing.host == service.host) {
+            merged.push(service);
+        }
+    }
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +323,85 @@ mod tests {
     #[test]
     fn skips_garbage_lines() {
         assert!(parse_mdns_services("List of discovered mdns services\n\ngarbage\nfoo bar\n").is_empty());
+    }
+
+    #[test]
+    fn adb_reply_requires_protocol_header() {
+        let mut auth = [0_u8; 24];
+        auth[..4].copy_from_slice(b"AUTH");
+        let auth_command = u32::from_le_bytes(*b"AUTH");
+        auth[20..24].copy_from_slice(&(auth_command ^ u32::MAX).to_le_bytes());
+        let mut cnxn = [0_u8; 24];
+        cnxn[..4].copy_from_slice(b"CNXN");
+        let cnxn_command = u32::from_le_bytes(*b"CNXN");
+        cnxn[20..24].copy_from_slice(&(cnxn_command ^ u32::MAX).to_le_bytes());
+        assert!(is_adb_reply(&auth));
+        assert!(is_adb_reply(&cnxn));
+        auth[20] ^= 1;
+        assert!(!is_adb_reply(&auth));
+        assert!(!is_adb_reply(b"HTTP/1.1 200 OK\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn probe_accepts_adb_handshake_response() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request_header = [0_u8; 24];
+            socket.read_exact(&mut request_header).await.unwrap();
+            assert_eq!(&request_header[..4], b"CNXN");
+            let payload_len =
+                u32::from_le_bytes(request_header[12..16].try_into().unwrap()) as usize;
+            let mut payload = vec![0_u8; payload_len];
+            socket.read_exact(&mut payload).await.unwrap();
+            let mut reply = [0_u8; 24];
+            reply[..4].copy_from_slice(b"AUTH");
+            let command = u32::from_le_bytes(*b"AUTH");
+            reply[20..24].copy_from_slice(&(command ^ u32::MAX).to_le_bytes());
+            socket.write_all(&reply).await.unwrap();
+        });
+
+        assert!(probe_adb_endpoint(addr).await);
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn merge_keeps_mdns_metadata_and_adds_missing_active_hosts() {
+        let mdns = parse_mdns_services(
+            "List of discovered mdns services\n\
+             adb-PA123\t_adb._tcp\t192.168.1.10:5555\n",
+        );
+        let active = vec![
+            MdnsService {
+                name: "adb-192.168.1.10".into(),
+                serial: None,
+                service_type: ACTIVE_SCAN_TYPE.into(),
+                host: "192.168.1.10".into(),
+                port: 5555,
+                target: "192.168.1.10:5555".into(),
+                pairing: false,
+            },
+            MdnsService {
+                name: "adb-192.168.1.24".into(),
+                serial: None,
+                service_type: ACTIVE_SCAN_TYPE.into(),
+                host: "192.168.1.24".into(),
+                port: 5555,
+                target: "192.168.1.24:5555".into(),
+                pairing: false,
+            },
+        ];
+
+        let merged = merge_discoveries(mdns, active);
+        assert_eq!(merged.len(), 2);
+        let known = merged
+            .iter()
+            .find(|service| service.host == "192.168.1.10")
+            .unwrap();
+        assert_eq!(known.serial.as_deref(), Some("PA123"));
+        assert!(merged.iter().any(|service| service.host == "192.168.1.24"));
     }
 }

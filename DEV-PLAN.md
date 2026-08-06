@@ -101,6 +101,7 @@ android-device-monitor-rs/
 - **T1.4 设备监控轮询**：后台 tokio 任务定时 `adb devices -l`，对比上次快照算出连接/断开 diff，经 event 推前端（对应原设备监控 + `webContents.send`）。
 - **T1.5 连接命令**：`commands/device.rs` 实现 USB 识别、`adb connect <ip:port>`（WiFi）、`adb disconnect`、设备信息（型号/系统版本/SN，走 `getprop`）。
 - **T1.6 历史设备持久化**：仅 WiFi 成功连接写入历史，落盘到运行时根目录下的本地文件（**非 userData**）。实现快速重连、失败就地改 IP 重连（成功覆盖记录）、移除（二次确认在前端）。「仅展示当前未连接的历史设备」「连接中…」状态逻辑前端已有，后端提供数据与命令。
+- **T1.7 局域网发现漏扫修复**：保留 `adb mdns services` 三拍流式发现，并行补扫本机主局域网 `/24` 的经典 ADB `5555` 端口；用 ADB `CNXN/AUTH` 握手排除普通端口服务，按 IP 与 mDNS 结果合并且不自动连接设备。前端允许显示无 SN 的主动补扫项，以 IP 兜底命名。
 
 **关键文件**：
 - `src-tauri/src/adb/binary.rs` — bundled adb 定位
@@ -115,6 +116,7 @@ android-device-monitor-rs/
 - USB 插入/拔出、WiFi connect/disconnect，设备列表与连接状态实时更新，行为与原版一致。
 - 设备信息（型号/系统/SN）正确显示。
 - 历史设备：WiFi 连过自动入历史、快速重连、失败改 IP 重连、移除均与原版一致；已连接设备不在历史列表重复出现。
+- 局域网扫描可发现正常 mDNS 广播设备，也能补回同一 `/24` 内未广播 mDNS、但经典 ADB `5555` 可达的设备；普通 5555 服务不得误报，扫描过程不得自动建立 ADB 连接。
 - adb 命令失败时前端收到结构化错误并正确提示。
 - 对拍：与原 Electron 版同一台设备操作结果一致。
 

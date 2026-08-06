@@ -48,9 +48,9 @@ export interface ElectronAPI {
   getDevices: () => Promise<ElectronResult<DeviceInfo[]>>;
   connectWiFi: (ip: string) => Promise<ElectronResult<DeviceInfo>>;
   pairWiFi: (target: string, pairingCode: string) => Promise<ElectronResult<PairResult>>;
-  /** 局域网 mDNS 自动发现可连接设备（Pico 等无线设备）。返回最终累计结果。 */
+  /** 局域网自动发现可连接设备（mDNS + 经典 ADB 5555 主动补扫）。返回最终累计结果。 */
   discoverMdnsDevices: () => Promise<ElectronResult<MdnsDevice[]>>;
-  /** 订阅 mDNS 流式发现：每拍把当前累计的可连接设备推来（先出先显），返回取消订阅函数。 */
+  /** 订阅流式发现：先推 mDNS 累计结果，补扫完成后推合并结果。 */
   onMdnsDiscovered: (callback: (devices: MdnsDevice[]) => void) => () => void;
   disconnect: (deviceId: string) => Promise<ElectronResult<undefined>>;
   startLogcat: (

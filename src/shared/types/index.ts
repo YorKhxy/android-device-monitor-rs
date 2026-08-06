@@ -33,7 +33,7 @@ export interface PairResult {
   alreadyPaired?: boolean;
 }
 
-/** mDNS 自动发现的局域网设备（adb mdns services 解析）。 */
+/** 局域网自动发现设备（mDNS 广播或经典 ADB 5555 主动补扫）。 */
 export interface MdnsDevice {
   name: string;
   serial?: string;

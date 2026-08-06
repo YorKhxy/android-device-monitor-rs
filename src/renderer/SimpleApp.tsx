@@ -349,7 +349,7 @@ function SimpleApp() {
   );
   const [runningLogDeviceIds, setRunningLogDeviceIds] = useState<Set<string>>(() => new Set());
   const [wifiIp, setWifiIp] = useState('');
-  // 局域网 mDNS 自动发现的设备（Pico 等无线设备，点一下直连，免输 IP）。
+  // 局域网自动发现的设备：mDNS 快速发现 + 经典 ADB 5555 端口主动补扫。
   const [mdnsDevices, setMdnsDevices] = useState<MdnsDevice[]>([]);
   const [mdnsScanned, setMdnsScanned] = useState(false); // 是否扫过一次（控制空态文案：未扫 vs 扫过无果）
   // 扫描约 1.6s（3 拍 × 700ms + adb 调用），冷却拉长到 1.8s 覆盖整个扫描周期——避免扫描没跑完就被再次点击，
@@ -1215,7 +1215,7 @@ function SimpleApp() {
     }
   };
 
-  // \u5c40\u57df\u7f51 mDNS \u81ea\u52a8\u53d1\u73b0\uff1a\u8dd1 adb mdns services\uff0c\u5217\u51fa\u9644\u8fd1\u65e0\u7ebf\u8bbe\u5907\uff08\u70b9\u4e00\u4e0b\u76f4\u8fde\uff09\u3002
+  // 局域网自动发现：mDNS 先出结果，后端再合并通过 ADB 握手确认的 5555 端口补扫结果。
   const refreshMdns = useCallback(async () => {
     if (!hasElectronAPI()) return;
     if (mdnsScanningRef.current) return; // 上一次扫描还没结束：忽略重入，避免两次扫描的流式 emit 互相覆盖
@@ -1262,7 +1262,8 @@ function SimpleApp() {
   };
 
   // \u53d1\u73b0\u5217\u8868\u6392\u9664\u5df2\u8fde\u63a5\u8bbe\u5907\uff08\u6309\u5e8f\u5217\u53f7 / ip:\u7aef\u53e3\u5339\u914d\uff09\u2014\u2014\u8fde\u4e0a\u540e\u81ea\u52a8\u4ece\u5217\u8868\u6d88\u5931\u3002
-  // \u53ea\u7559\u771f\u5b9e SN \u4ee5 PA \u5f00\u5934\u7684\u8bbe\u5907\uff08Pico\uff09\uff0c\u8fc7\u6ee4\u6389\u624b\u673a\u7b49\u5176\u5b83\u5c40\u57df\u7f51\u8bbe\u5907\u3002
+  // mDNS 条目沿用「真实 SN 以 PA 开头」的 Pico 过滤；主动补扫条目已经过 ADB 协议握手确认，
+  // 即使未授权、拿不到 SN 也必须显示，否则会再次吞掉本次要修复的无 mDNS 设备。
   // 已连接判断按 **IP** 比，不按序列号：Pico 常有重复序列号，按序列号会让「同序列号、未连接」的另一台
   // 被已连接的那台误隐藏（→ 手动能连、就是扫不出来）。WiFi 设备 id 为 ip:端口取 IP；USB 序列号无冒号取整段，
   // 不会误撞 IP。按 IP 比也免去端口差异（mDNS 经典 5555 vs 无线调试随机端口）的干扰。
@@ -1271,16 +1272,16 @@ function SimpleApp() {
   const connectedIps = new Set<string>(
     devices.filter((d) => d.status === 'connected').map((d) => (d.id || '').split(':')[0]).filter(Boolean)
   );
-  const visibleMdns = mdnsDevices.filter((m) =>
-    !connectedIps.has(m.host) &&
-    resolveMdnsSn(m).toUpperCase().startsWith('PA')
-  );
+  const visibleMdns = mdnsDevices.filter((m) => {
+    const activeDiscovered = m.serviceType === '_adb-active._tcp';
+    return !connectedIps.has(m.host) && (activeDiscovered || resolveMdnsSn(m).toUpperCase().startsWith('PA'));
+  });
 
   // \u53d1\u73b0\u8bbe\u5907\u7684\u663e\u793a\u540d\uff1a\u6309\u771f\u5b9e SN \u53d6\u300c\u81ea\u5b9a\u4e49\u540d\u300d\uff1b\u53d6\u4e0d\u5230\u81ea\u5b9a\u4e49\u540d\u5c31\u663e\u793a\u771f\u5b9e SN\u3002
   const resolveMdnsName = (d: MdnsDevice): string => {
     const realSn = resolveMdnsSn(d);
     const custom = (customDeviceNames[realSn] || (d.serial ? customDeviceNames[d.serial] : undefined))?.trim();
-    return custom || realSn || d.name;
+    return custom || realSn || (d.serviceType === '_adb-active._tcp' ? d.host : d.name);
   };
 
   const clearHistoryError = useCallback((serialNo: string) => {

@@ -71,16 +71,25 @@ pub async fn pair_wifi(app: AppHandle, target: String, pairing_code: String) -> 
 pub async fn discover_mdns_devices(app: AppHandle) -> Value {
     match binary::resolve_adb_path(&app) {
         None => adb_not_found(),
-        // 流式多拍扫描(3 拍 × 间隔 700ms)：覆盖 mDNS 周期广播/冷缓存导致的单次快照漏扫，
-        // 但每拍即把累计结果 emit("mdns_discovered") 给前端——第一拍 ~百毫秒就先显示，无需干等全程。
+        // mDNS 三拍负责快速首屏；同时主动补扫本机 /24 网段的经典 ADB 5555 端口，
+        // 用协议握手补回「IP:端口能连但设备未广播 mDNS」的漏项。
         Some(adb) => {
             let app2 = app.clone();
-            let result = super::mdns::discover_streaming(&adb, 3, 700, move |snapshot| {
+            let mdns_scan = super::mdns::discover_streaming(&adb, 3, 700, move |snapshot| {
                 let _ = app2.emit("mdns_discovered", &snapshot);
-            })
-            .await;
-            match result {
-                Ok(svcs) => json!({ "success": true, "data": super::mdns::connectable(svcs) }),
+            });
+            let (mdns_result, active) = tokio::join!(mdns_scan, super::mdns::discover_active_adb());
+
+            match mdns_result {
+                Ok(svcs) => {
+                    let merged = super::mdns::merge_discoveries(svcs, active);
+                    let _ = app.emit("mdns_discovered", &merged);
+                    json!({ "success": true, "data": merged })
+                }
+                Err(_) if !active.is_empty() => {
+                    let _ = app.emit("mdns_discovered", &active);
+                    json!({ "success": true, "data": active })
+                }
                 Err(e) => e.to_result(),
             }
         }
