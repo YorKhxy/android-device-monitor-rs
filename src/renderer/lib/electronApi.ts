@@ -131,6 +131,7 @@ export interface ElectronAPI {
   wakeDevice: (deviceId: string) => Promise<ElectronResult<undefined>>;
   unlockDevice: (deviceId: string) => Promise<ElectronResult<undefined>>;
   rebootDevice: (deviceId: string) => Promise<ElectronResult<undefined>>;
+  closePicoLargeSpace: (deviceId: string) => Promise<ElectronResult<undefined>>;
   exportLogs: (logs: LogEntry[]) => Promise<ElectronResult<string>>;
   exportFullLogs: (deviceId: string) => Promise<ElectronResult<string>>;
   exportFullLogsByPackage: (deviceId: string, packageName: string) => Promise<ElectronResult<string>>;

@@ -1,5 +1,5 @@
-//! 设备控制（息屏/唤醒/解锁/重启）+ 本机文件定位（打开所在文件夹/打开路径）。
-//! 对应原 ADBManager 的 sleepDevice/wakeDevice/unlockDevice/rebootDevice 与本机 opener。
+//! 设备控制（息屏/唤醒/解锁/重启/PICO 大空间）+ 本机文件定位（打开所在文件夹/打开路径）。
+//! 对应原 ADBManager 的设备控制能力与本机 opener。
 //! 命令名 = 渲染层方法名 snake_case。
 
 use serde_json::{json, Value};
@@ -8,8 +8,10 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::adb::binary;
 use crate::adb::error::classify_adb_error;
-use crate::adb::manager::exec_adb_capture;
+use crate::adb::manager::{exec_adb, exec_adb_capture};
 use crate::adb::scrcpy::parse_screen_size;
+
+const PICO_TOB_SERVICE_ACTION: &str = "com.pvr.tobservice.remoteservice";
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -107,6 +109,38 @@ pub async fn reboot_device(app: AppHandle, device_id: String) -> Value {
     }
 }
 
+fn pico_large_space_adb_args(device_id: &str) -> [&str; 13] {
+    [
+        "-s",
+        device_id,
+        "shell",
+        "am",
+        "startservice",
+        "-a",
+        PICO_TOB_SERVICE_ACTION,
+        "-e",
+        "act",
+        "switch_ls",
+        "-e",
+        "switch",
+        "off",
+    ]
+}
+
+/// 通过 PICO ToBService 关闭大空间模式。仅由前端识别为 PICO 的设备卡片暴露入口。
+/// `force-stop com.picoxr.blspace` 只会结束设置界面，不会清除 Guardian 的大空间状态。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn close_pico_large_space(app: AppHandle, device_id: String) -> Value {
+    let adb = match binary::resolve_adb_path(&app) {
+        None => return adb_not_found(),
+        Some(p) => p,
+    };
+    match exec_adb(&adb, &pico_large_space_adb_args(&device_id), 10_000).await {
+        Ok(_) => json!({ "success": true, "data": null }),
+        Err(e) => e.to_result(),
+    }
+}
+
 /// 在系统文件管理器中定位并选中本机文件（导出/下载后「打开所在文件夹」）。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn show_item_in_folder(app: AppHandle, local_path: String) -> Value {
@@ -136,5 +170,27 @@ mod tests {
         assert!(is_expected_reboot_disconnect("", "adb: no devices/emulators found"));
         assert!(!is_expected_reboot_disconnect("", "permission denied"));
         assert!(!is_expected_reboot_disconnect("", ""));
+    }
+
+    #[test]
+    fn pico_large_space_command_routes_through_tob_service() {
+        assert_eq!(
+            pico_large_space_adb_args("pico-serial"),
+            [
+                "-s",
+                "pico-serial",
+                "shell",
+                "am",
+                "startservice",
+                "-a",
+                "com.pvr.tobservice.remoteservice",
+                "-e",
+                "act",
+                "switch_ls",
+                "-e",
+                "switch",
+                "off",
+            ]
+        );
     }
 }

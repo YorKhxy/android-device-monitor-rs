@@ -1,8 +1,12 @@
 # 变更记录
 
 ## [v2.15] - 2026-08-06
+### 新增
+- **设备卡片增加「关闭大空间」快捷按钮**：仅 PICO 设备显示，操作无二次确认，执行中进入设备操作忙碌态，失败时显示明确错误。普通 Android 设备不显示，非在线设备不可执行。
+
 ### 修正
 - **局域网扫描补回未广播 mDNS 的 ADB 设备**：保留现有 `adb mdns services` 三拍流式发现，同时并行扫描本机主局域网 `/24` 的经典 ADB `5555` 端口；仅将返回 ADB `CNXN/AUTH` 协议头的端点加入结果，避免误报普通 5555 服务。扫描不执行 `adb connect`，不会擅自改变设备连接状态。最终结果按 IP 合并，mDNS 条目优先保留 SN 和广播端口；主动补扫项无 SN 时以前端 IP 作为显示名。
+- **关闭大空间改用 PICO 固件 ToBService 接口**：原实现执行 `am force-stop com.picoxr.blspace`，只能结束 LSpace 设置进程，无法清除 Guardian 持有的大空间状态。改为执行 `adb shell am startservice -a com.pvr.tobservice.remoteservice -e act switch_ls -e switch off`；已在 A9210 实机确认 ToBService 返回关闭成功，Guardian 状态切换为 `SetLargeSpaceForB 0`。
 
 ---
 

@@ -425,7 +425,7 @@ function SimpleApp() {
   const [isUnifiedInstalling, setIsUnifiedInstalling] = useState(false);
   // 安装前「比对设备已装应用」阶段：此时安装按钮置灰，并显示可点的「中断」按钮中止比对。
   const [isPreChecking, setIsPreChecking] = useState(false);
-  const [busyDeviceAction, setBusyDeviceAction] = useState<{ id: string; action: 'sleep' | 'wake' | 'unlock' | 'reboot' } | null>(null);
+  const [busyDeviceAction, setBusyDeviceAction] = useState<{ id: string; action: 'sleep' | 'wake' | 'unlock' | 'reboot' | 'close-pico-space' } | null>(null);
   const [fileBrowserDevice, setFileBrowserDevice] = useState<DeviceInfo | null>(null);
   const [confirmDisconnectId, setConfirmDisconnectId] = useState<string | null>(null);
   // 重启是高风险操作，点击后进入行内二次确认态（与断开确认互斥，避免同卡片同时弹两个确认）
@@ -2196,6 +2196,25 @@ function SimpleApp() {
     }
   };
 
+  const handleClosePicoLargeSpace = async (device: DeviceInfo) => {
+    if (!hasElectronAPI() || busyDeviceAction || device.status !== 'connected' || !isLikelyPicoDevice(device)) return;
+    setBusyDeviceAction({ id: device.id, action: 'close-pico-space' });
+    const startedAt = Date.now();
+    try {
+      const result = await window.electronAPI!.closePicoLargeSpace(device.id);
+      if (!result.success) {
+        setError(formatOperationError(result, '关闭 PICO 大空间失败'));
+        return;
+      }
+      setError('');
+    } catch (err) {
+      setError('关闭 PICO 大空间失败: ' + (err as Error).message);
+    } finally {
+      await withMinCooldown(startedAt, 500);
+      setBusyDeviceAction(null);
+    }
+  };
+
   const loadWeakNetStatus = async () => {
     if (!selectedDevice || !hasElectronAPI()) return;
     try {
@@ -3827,24 +3846,38 @@ function SimpleApp() {
                       ))}
                     </div>
                   )}
-                  <div style={{ marginTop: '8px', display: 'flex', gap: '6px' }}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setFileBrowserDevice(device); }}
-                      data-tip="浏览设备文件、下载到电脑、上传文件到设备"
-                      className="btn secondary sm" style={{ flex: 1, justifyContent: 'center' }}
-                    ><Icon name="folder" color="var(--gold)" />文件管理</button>
-                    {confirmDisconnectId === device.id ? (
-                      <>
+                  {confirmDisconnectId === device.id ? (
+                    <div style={{ marginTop: '8px', display: 'flex', gap: '6px' }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setConfirmDisconnectId(null); disconnectDevice(device); }}
+                        className="btn sm" style={{ flex: 1, justifyContent: 'center', background: 'var(--danger)', color: '#fff', borderColor: 'var(--danger)' }}
+                      >确认断开</button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setConfirmDisconnectId(null); }}
+                        className="btn secondary sm" style={{ flex: 1, justifyContent: 'center' }}
+                      >取消</button>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: '8px', display: 'flex', gap: '6px' }}>
+                      {isLikelyPicoDevice(device) && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setConfirmDisconnectId(null); disconnectDevice(device); }}
-                          className="btn sm" style={{ justifyContent: 'center', background: 'var(--danger)', color: '#fff', borderColor: 'var(--danger)' }}
-                        >确认断开</button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setConfirmDisconnectId(null); }}
-                          className="btn secondary sm" style={{ justifyContent: 'center' }}
-                        >取消</button>
-                      </>
-                    ) : (
+                          onClick={(e) => { e.stopPropagation(); setSelectedDevice(device); void handleClosePicoLargeSpace(device); }}
+                          disabled={Boolean(busyDeviceAction) || device.status !== 'connected'}
+                          data-tip="停止 PICO 系统内置大空间应用"
+                          className="btn secondary sm"
+                          style={{ flex: 1, justifyContent: 'center' }}
+                        >
+                          <Icon name="minimize-2" />
+                          {busyDeviceAction?.id === device.id && busyDeviceAction.action === 'close-pico-space' ? '关闭中…' : '关闭大空间'}
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setFileBrowserDevice(device); }}
+                        data-tip="浏览设备文件、下载到电脑、上传文件到设备"
+                        className="btn secondary sm" style={{ flex: 1, justifyContent: 'center' }}
+                      >
+                        <Icon name="folder" color="var(--gold)" />文件管理
+                      </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setSelectedDevice(device);setConfirmRebootId(null); setConfirmDisconnectId(device.id); }}
                         data-tip="断开设备连接"
@@ -3853,8 +3886,8 @@ function SimpleApp() {
                         onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--danger-soft)'; }}
                         onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
                       ><Icon name="unplug" color="var(--danger)" /></button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )})}
             </div>

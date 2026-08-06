@@ -134,6 +134,7 @@ const api: ElectronAPI = {
   wakeDevice: (deviceId) => call('wake_device', { deviceId }),
   unlockDevice: (deviceId) => call('unlock_device', { deviceId }),
   rebootDevice: (deviceId) => call('reboot_device', { deviceId }),
+  closePicoLargeSpace: (deviceId) => call('close_pico_large_space', { deviceId }),
   exportLogs: (logs) => call('export_logs', { logs }),
   exportFullLogs: (deviceId) => call('export_full_logs', { deviceId }),
   exportFullLogsByPackage: (deviceId, packageName) =>

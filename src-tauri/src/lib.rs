@@ -123,6 +123,7 @@ pub fn run() {
             commands::device::wake_device,
             commands::device::unlock_device,
             commands::device::reboot_device,
+            commands::device::close_pico_large_space,
             commands::get_app_version,
             // 视频独立窗口（采集回放弹出，方案二）
             commands::popout::open_capture_popout,
