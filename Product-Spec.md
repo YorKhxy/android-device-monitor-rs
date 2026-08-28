@@ -27,7 +27,7 @@
 | 设备列表 | 显示已连接的所有设备 | P0 |
 | 连接状态 | 实时显示连接状态（已连接/断开） | P0 |
 | 设备信息 | 显示设备型号、系统版本、序列号 | P1 |
-| 关闭 PICO 大空间 | 仅在识别为 PICO 的设备卡片显示「关闭大空间」快捷按钮；点击后通过 PICO 固件 ToBService 接口 `adb shell am startservice -a com.pvr.tobservice.remoteservice -e act switch_ls -e switch off` 关闭 Guardian 管理的大空间模式。操作可逆、无需二次确认；执行中显示忙碌态，失败时沿用设备操作错误提示。非 PICO 设备不显示，非在线设备不可执行 | P1 |
+| 关闭 PICO 大空间 | 仅在识别为 PICO 的设备卡片显示「关闭大空间」快捷按钮；点击后先停止 `com.picoxr.blspace`，中止仍在运行的找回大空间流程，再通过 PICO 固件 ToBService 接口 `adb shell am startservice -a com.pvr.tobservice.remoteservice -e act switch_ls -e switch off` 清除 Guardian 管理的大空间状态。操作可逆、无需二次确认；执行中显示忙碌态，失败时沿用设备操作错误提示。非 PICO 设备不显示，非在线设备不可执行 | P1 |
 | 历史设备 | 保存曾经 WiFi 连过的设备，下次一键快速重连 | P1 |
 | 失败重连 | 快速重连失败（IP 变更）时，在卡片内就地输入新 IP 重连 | P1 |
 | 移除历史 | 支持手动移除不再需要的历史设备卡片 | P1 |

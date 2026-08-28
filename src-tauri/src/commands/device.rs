@@ -12,6 +12,7 @@ use crate::adb::manager::{exec_adb, exec_adb_capture};
 use crate::adb::scrcpy::parse_screen_size;
 
 const PICO_TOB_SERVICE_ACTION: &str = "com.pvr.tobservice.remoteservice";
+const PICO_LARGE_SPACE_PACKAGE: &str = "com.picoxr.blspace";
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -127,14 +128,37 @@ fn pico_large_space_adb_args(device_id: &str) -> [&str; 13] {
     ]
 }
 
+fn pico_large_space_stop_retrieval_adb_args(device_id: &str) -> [&str; 6] {
+    [
+        "-s",
+        device_id,
+        "shell",
+        "am",
+        "force-stop",
+        PICO_LARGE_SPACE_PACKAGE,
+    ]
+}
+
 /// 通过 PICO ToBService 关闭大空间模式。仅由前端识别为 PICO 的设备卡片暴露入口。
-/// `force-stop com.picoxr.blspace` 只会结束设置界面，不会清除 Guardian 的大空间状态。
+/// 找回大空间期间，LSpace 会继续持有找回流程；先停止它，再由 ToBService 清除 Guardian 状态。
+/// 单独 `force-stop com.picoxr.blspace` 仍不足以关闭大空间，必须继续执行 `switch_ls=off`。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn close_pico_large_space(app: AppHandle, device_id: String) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
         None => return adb_not_found(),
         Some(p) => p,
     };
+
+    if let Err(e) = exec_adb(
+        &adb,
+        &pico_large_space_stop_retrieval_adb_args(&device_id),
+        8_000,
+    )
+    .await
+    {
+        return e.to_result();
+    }
+
     match exec_adb(&adb, &pico_large_space_adb_args(&device_id), 10_000).await {
         Ok(_) => json!({ "success": true, "data": null }),
         Err(e) => e.to_result(),
@@ -173,7 +197,18 @@ mod tests {
     }
 
     #[test]
-    fn pico_large_space_command_routes_through_tob_service() {
+    fn pico_large_space_command_stops_retrieval_then_routes_through_tob_service() {
+        assert_eq!(
+            pico_large_space_stop_retrieval_adb_args("pico-serial"),
+            [
+                "-s",
+                "pico-serial",
+                "shell",
+                "am",
+                "force-stop",
+                "com.picoxr.blspace",
+            ]
+        );
         assert_eq!(
             pico_large_space_adb_args("pico-serial"),
             [
