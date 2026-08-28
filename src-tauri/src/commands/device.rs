@@ -12,7 +12,8 @@ use crate::adb::manager::{exec_adb, exec_adb_capture};
 use crate::adb::scrcpy::parse_screen_size;
 
 const PICO_TOB_SERVICE_ACTION: &str = "com.pvr.tobservice.remoteservice";
-const PICO_LARGE_SPACE_PACKAGE: &str = "com.picoxr.blspace";
+const PICO_LARGE_SPACE_RETRIEVAL_PACKAGES: [&str; 2] =
+    ["com.picoxr.blspace", "com.pvr.seethrough.setting"];
 
 fn adb_not_found() -> Value {
     classify_adb_error("enoent", &[]).to_result()
@@ -128,20 +129,13 @@ fn pico_large_space_adb_args(device_id: &str) -> [&str; 13] {
     ]
 }
 
-fn pico_large_space_stop_retrieval_adb_args(device_id: &str) -> [&str; 6] {
-    [
-        "-s",
-        device_id,
-        "shell",
-        "am",
-        "force-stop",
-        PICO_LARGE_SPACE_PACKAGE,
-    ]
+fn pico_force_stop_package_adb_args<'a>(device_id: &'a str, package: &'a str) -> [&'a str; 6] {
+    ["-s", device_id, "shell", "am", "force-stop", package]
 }
 
 /// 通过 PICO ToBService 关闭大空间模式。仅由前端识别为 PICO 的设备卡片暴露入口。
-/// 找回大空间期间，LSpace 会继续持有找回流程；先停止它，再由 ToBService 清除 Guardian 状态。
-/// 单独 `force-stop com.picoxr.blspace` 仍不足以关闭大空间，必须继续执行 `switch_ls=off`。
+/// 找回期间会依次出现 LSpace 和安全边界设置两层界面：先请求关闭，再停止两层界面，
+/// 最后再次请求关闭，以清除界面切换竞态期间可能回写的 Guardian 状态。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn close_pico_large_space(app: AppHandle, device_id: String) -> Value {
     let adb = match binary::resolve_adb_path(&app) {
@@ -149,14 +143,20 @@ pub async fn close_pico_large_space(app: AppHandle, device_id: String) -> Value 
         Some(p) => p,
     };
 
-    if let Err(e) = exec_adb(
-        &adb,
-        &pico_large_space_stop_retrieval_adb_args(&device_id),
-        8_000,
-    )
-    .await
-    {
+    if let Err(e) = exec_adb(&adb, &pico_large_space_adb_args(&device_id), 10_000).await {
         return e.to_result();
+    }
+
+    for package in PICO_LARGE_SPACE_RETRIEVAL_PACKAGES {
+        if let Err(e) = exec_adb(
+            &adb,
+            &pico_force_stop_package_adb_args(&device_id, package),
+            8_000,
+        )
+        .await
+        {
+            return e.to_result();
+        }
     }
 
     match exec_adb(&adb, &pico_large_space_adb_args(&device_id), 10_000).await {
@@ -197,9 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn pico_large_space_command_stops_retrieval_then_routes_through_tob_service() {
+    fn pico_large_space_command_stops_both_retrieval_interfaces() {
         assert_eq!(
-            pico_large_space_stop_retrieval_adb_args("pico-serial"),
+            PICO_LARGE_SPACE_RETRIEVAL_PACKAGES,
+            ["com.picoxr.blspace", "com.pvr.seethrough.setting"]
+        );
+        assert_eq!(
+            pico_force_stop_package_adb_args("pico-serial", "com.picoxr.blspace"),
             [
                 "-s",
                 "pico-serial",
@@ -209,6 +213,21 @@ mod tests {
                 "com.picoxr.blspace",
             ]
         );
+        assert_eq!(
+            pico_force_stop_package_adb_args("pico-serial", "com.pvr.seethrough.setting"),
+            [
+                "-s",
+                "pico-serial",
+                "shell",
+                "am",
+                "force-stop",
+                "com.pvr.seethrough.setting",
+            ]
+        );
+    }
+
+    #[test]
+    fn pico_large_space_command_routes_through_tob_service() {
         assert_eq!(
             pico_large_space_adb_args("pico-serial"),
             [

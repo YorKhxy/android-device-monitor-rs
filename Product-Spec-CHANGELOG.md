@@ -2,7 +2,7 @@
 
 ## [v2.16] - 2026-08-28
 ### 修正
-- **找回大空间期间关闭不生效**：原实现仅调用 ToBService 的 `switch_ls=off`。固件状态虽然已变为关闭，但 `com.picoxr.blspace` 的找回进程和界面仍在运行，用户侧表现为关闭无效。现在先停止该找回进程，再调用 ToBService 清除 Guardian 大空间状态；已在 A9210 实机验证最终状态为 `close`、找回进程退出。
+- **找回大空间期间关闭不生效**：原实现仅调用 ToBService 的 `switch_ls=off`。固件状态虽然已变为关闭，但找回流程包含 `com.picoxr.blspace` 和 `com.pvr.seethrough.setting` 两层界面，用户侧仍会残留找回页面。现在先请求关闭，再停止两层找回界面，最后再次请求关闭以消除界面切换竞态；已在 A9210 实机验证最终状态为 `close`、两层找回进程退出，Guardian/Tracking 服务保持运行。
 
 ---
 
